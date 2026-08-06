@@ -1,0 +1,26 @@
+# --- Python ---
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# --- 大容量の外部成果物（再取得可能なのでリポジトリに入れない） ---
+# models/          : STT/VADモデル 約2.9GB（whisper-large-v3-turbo-int8-ov / vosk / silero_vad）
+# voicevox_engine/ : VOICEVOX エンジン本体 約2.1GB（公式配布物を各自展開する）
+# voice_samples/   : 声色比較用の wav（VOICEVOX 出力）
+models/
+voicevox_engine/
+voice_samples/
+
+# --- 稼働時に生成されるもの ---
+# logs/ には lucas_voice.log と検証用の使い捨てスクリプト・キャプチャ画像が入る
+logs/
+*.log
+*.bmp
+
+# --- OS/エディタ ---
+Thumbs.db
+desktop.ini
+.DS_Store
+.idea/
+.vscode/

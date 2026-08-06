@@ -1,0 +1,7 @@
+# ルーカス音声常駐AI 依存
+mcp>=1.2.0            # MCP サーバー (speak_server.py)
+pywin32>=306         # Windows SAPI (TTS)・クリップボード・SendKeys
+faster-whisper>=1.0  # STT（CTranslate2・CPU int8 推論。torch 不要）
+sounddevice>=0.4.6   # マイク録音
+numpy>=1.24          # 音声バッファ処理・音量ベース簡易VAD
+soundfile>=0.12      # WAV 入出力（デバッグ・保存用）

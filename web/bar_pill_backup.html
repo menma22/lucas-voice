@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<!-- ============================================================
+     旧デザインのバックアップ（2026-07-15 正方形オーロラ粒子タイルへ改装時に退避）
+     これは 312x40 の横長ピル版（Siri風リキッドオーブ3球）。
+     戻すには: このファイルを bar.html に上書きし、glass_bar.py の
+     BAR_W, BAR_H を 312, 40 に、_geometry の x を中央アンカーに戻す。
+     ============================================================ -->
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Lucas Bar</title>
+<style>
+  :root {
+    --glass-edge: rgba(255, 255, 255, 0.13);
+    --glass-sheen: rgba(255, 255, 255, 0.055);
+    --text: #dfe6ff;
+    --text-dim: #8b93b8;
+    --accent: #565f89;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+  html, body { overflow: hidden; height: 100%; }
+  body {
+    /* ウィンドウは SetWindowRgn で角丸クリップ（WebView2 は透過非対応） */
+    background: linear-gradient(135deg, #151929, #090b14);
+    display: flex; flex-direction: column; justify-content: flex-end;
+    font-family: "Yu Gothic UI", sans-serif;
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ===== 履歴パネル（ピルの上に展開） ===== */
+  #panel {
+    display: none; height: 308px;
+    border-bottom: 1px solid rgba(255,255,255,.07);
+    flex-direction: column; overflow: hidden;
+  }
+  #panel header {
+    padding: 9px 14px 7px; font-size: 9.5px; letter-spacing: .16em;
+    color: var(--text-dim); font-family: "Cascadia Code", monospace;
+    border-bottom: 1px solid rgba(255,255,255,.05);
+  }
+  #hist { flex: 1; overflow-y: auto; padding: 4px; }
+  #hist::-webkit-scrollbar { width: 4px; }
+  #hist::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 2px; }
+  .item { padding: 6px 9px; border-radius: 9px; margin: 2px 3px; cursor: pointer;
+          transition: background .15s; }
+  .item:hover { background: rgba(255,255,255,.05); }
+  .item .meta { font-family: "Cascadia Code", monospace; font-size: 9px;
+                color: var(--text-dim); margin-bottom: 2px; display: flex; gap: 7px; }
+  .item .meta .mode-dict { color: #5eead4; }
+  .item .meta .mode-talk { color: #93b4ff; }
+  .item .body { font-size: 11px; line-height: 1.5; color: var(--text);
+                user-select: text; word-break: break-all; }
+  .empty { text-align: center; color: var(--text-dim); font-size: 10.5px; padding: 34px 0; }
+
+  /* ===== ピル本体（コンパクト・常に最下段） ===== */
+  #pill {
+    position: relative; flex: 0 0 auto;
+    width: 100%; height: 40px;
+    border-radius: 20px;
+    background:
+      radial-gradient(130% 220% at 12% 0%, color-mix(in srgb, var(--accent) 15%, transparent), transparent 45%),
+      linear-gradient(135deg, rgba(255,255,255,.05), transparent 55%);
+    border: 1px solid var(--glass-edge);
+    box-shadow:
+      inset 0 1px 0 var(--glass-sheen),
+      inset 0 0 26px -12px color-mix(in srgb, var(--accent) 55%, transparent);
+    display: flex; align-items: center;
+    padding: 0 10px 0 6px;
+    overflow: hidden;
+  }
+  #pill::before { /* ガラスの光の筋 */
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(115deg, transparent 30%, rgba(255,255,255,.05) 45%, transparent 60%);
+    pointer-events: none;
+  }
+
+  #orb-wrap { position: relative; width: 30px; height: 30px; flex: 0 0 auto; }
+  #orb { width: 30px; height: 30px; display: block; }
+
+  #label {
+    margin-left: 8px; flex: 1 1 auto;
+    font-size: 11.5px; letter-spacing: .01em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+
+  #badge {
+    flex: 0 0 auto; display: none;
+    font-size: 9.5px; padding: 2px 8px; border-radius: 9px; margin-left: 6px;
+    color: var(--text);
+    background: color-mix(in srgb, var(--accent) 22%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    cursor: pointer; transition: all .15s ease;
+  }
+  #badge:hover { background: rgba(247,118,142,.25); border-color: rgba(247,118,142,.6);
+                 color: #ffd9e0; }
+
+  #btns { flex: 0 0 auto; display: flex; gap: 5px; margin-left: 6px;
+          opacity: 0; transform: translateX(5px); transition: all .22s ease; }
+  #pill:hover #btns { opacity: 1; transform: none; }
+  .btn {
+    width: 20px; height: 20px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10.5px; cursor: pointer; color: var(--text-dim);
+    background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.1);
+    transition: all .15s ease;
+  }
+  .btn:hover { color: #fff; background: rgba(255,255,255,.14); transform: scale(1.1); }
+  #btn-close:hover { color: #ff8da3; border-color: rgba(255,141,163,.5); }
+</style>
+</head>
+<body>
+  <div id="panel">
+    <header>RECOGNITION LOG</header>
+    <div id="hist"></div>
+  </div>
+
+  <div id="pill" class="pywebview-drag-region">
+    <div id="orb-wrap"><canvas id="orb" width="80" height="80"></canvas></div>
+    <div id="label" class="pywebview-drag-region">待機中</div>
+    <div id="badge" title="クリックで下書きを全部消す"></div>
+    <div id="btns">
+      <div class="btn" id="btn-hist" title="認識ログ">≡</div>
+      <div class="btn" id="btn-dash" title="ダッシュボード">◎</div>
+      <div class="btn" id="btn-close" title="閉じる / 録音キャンセル">✕</div>
+    </div>
+  </div>
+
+<script>
+/* ================= リキッドオーブ（Siri風流体） =================
+   加算合成のグラデーション球3つが別周期で漂い、外周リングが波打つ。
+   音声レベル(0..1)が波の振幅と輝度に直結——声を捉えている時だけ生きて動く。 */
+const cv = document.getElementById("orb");
+const ctx = cv.getContext("2d");
+
+let cur = { key: "idle", accent: "#565f89", label: "待機中", pending: 0, level: 0 };
+let smooth = 0;
+let phase = Math.random() * 9;
+
+const BLOBS = [
+  { hueShift: 0,   speed: 1.00, orbit: 4.2, size: 13 },
+  { hueShift: 40,  speed: 0.66, orbit: 5.6, size: 11 },
+  { hueShift: -35, speed: 1.42, orbit: 4.8, size: 10 },
+];
+
+function hexToRgb(h) {
+  const v = parseInt(h.slice(1), 16);
+  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+}
+function shiftColor([r, g, b], deg) {
+  const t = deg / 120;
+  return t >= 0 ? [r * (1 - t) + 90 * t, g * (1 - t) + 200 * t, b]
+                : [r, g * (1 + t) + 120 * -t, b * (1 + t) + 255 * -t];
+}
+
+function drawOrb(dt) {
+  const active = ["recording", "dictating", "speaking", "transcribing",
+                  "dictate_proc", "booting", "loading"].includes(cur.key);
+  const target = Math.min(1, cur.level * (cur.key === "recording" || cur.key === "dictating" ? 1 : .4));
+  smooth += (target - smooth) * .25;
+  const energy = active ? 0.35 + smooth * 0.65 : 0.14;
+  phase += dt * (0.6 + energy * 1.8);
+
+  ctx.clearRect(0, 0, 80, 80);
+  ctx.globalCompositeOperation = "lighter";
+  const base = hexToRgb(cur.accent);
+  const cx = 40, cy = 40;
+
+  for (const b of BLOBS) {
+    const a = phase * b.speed;
+    const x = cx + Math.cos(a) * b.orbit * (1 + smooth * 1.6);
+    const y = cy + Math.sin(a * 1.31) * b.orbit * (1 + smooth * 1.6);
+    const r = (b.size + Math.sin(a * 2.1) * 2.5) * (1 + energy * 0.55) + 8;
+    const [cr, cg, cb] = shiftColor(base, b.hueShift);
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `rgba(${cr|0},${cg|0},${cb|0},${0.55 + energy * 0.4})`);
+    g.addColorStop(0.55, `rgba(${cr|0},${cg|0},${cb|0},${0.18 + energy * 0.2})`);
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+  }
+
+  /* 外周リング: 音を捉えている時だけ波紋が立つ */
+  ctx.globalCompositeOperation = "source-over";
+  ctx.beginPath();
+  const pts = 44;
+  for (let i = 0; i <= pts; i++) {
+    const t = (i / pts) * Math.PI * 2;
+    const wob = Math.sin(t * 5 + phase * 2.2) * 2.2 * smooth
+              + Math.sin(t * 3 - phase * 1.4) * 1.4 * smooth;
+    const rr = 15 + (active ? wob : Math.sin(t * 4 + phase) * 0.5);
+    const x = cx + Math.cos(t) * rr, y = cy + Math.sin(t) * rr;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  ctx.strokeStyle = `rgba(${base[0]},${base[1]},${base[2]},${active ? .5 + smooth * .5 : .28})`;
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+}
+
+let last = performance.now();
+(function loop(now) {
+  drawOrb(Math.min(0.05, (now - last) / 1000));
+  last = now;
+  requestAnimationFrame(loop);
+})(last);
+
+/* ================= 状態ポーリング ================= */
+const label = document.getElementById("label");
+const badge = document.getElementById("badge");
+
+/* DPIスケール合わせ: ウィンドウは物理px、ページはdPR=1 → zoom で一致。
+   poll の scale を毎回見て追従する（DPI/モニタ変更でも崩れない）。 */
+let appliedScale = 0;
+function applyScale(sc) {
+  if (sc && sc > 0 && Math.abs(sc - appliedScale) > 0.01) {
+    document.documentElement.style.zoom = sc;
+    appliedScale = sc;
+  }
+}
+
+async function poll() {
+  try {
+    const s = await window.pywebview.api.poll();
+    if (!s) return;
+    applyScale(s.scale);
+    cur = s;
+    document.documentElement.style.setProperty("--accent", s.accent);
+    label.textContent = s.label;
+    if (s.pending > 0) { badge.style.display = "block"; badge.textContent = `下書き ${s.pending}`; }
+    else badge.style.display = "none";
+  } catch (e) { /* bridge 未準備 */ }
+}
+setInterval(poll, 66);
+
+/* ================= ボタン ================= */
+document.getElementById("btn-close").addEventListener("click", () =>
+  window.pywebview.api.close_clicked());
+document.getElementById("badge").addEventListener("click", () =>
+  window.pywebview.api.clear_pending());
+document.getElementById("btn-dash").addEventListener("click", () =>
+  window.pywebview.api.open_dashboard());
+document.getElementById("btn-hist").addEventListener("click", async () => {
+  const panel = document.getElementById("panel");
+  const open = panel.style.display !== "flex";
+  panel.style.display = open ? "flex" : "none";
+  await window.pywebview.api.set_expanded(open);
+  if (open) renderHistory();
+});
+
+async function renderHistory() {
+  const items = await window.pywebview.api.history();
+  const el = document.getElementById("hist");
+  if (!items.length) { el.innerHTML = '<div class="empty">まだ認識ログはないよ</div>'; return; }
+  el.innerHTML = items.slice().reverse().map(([ts, mode, body]) => `
+    <div class="item" title="クリックでコピー">
+      <div class="meta"><span>${ts}</span>
+        <span class="${mode.includes("文字") ? "mode-dict" : "mode-talk"}">[${mode}]</span></div>
+      <div class="body">${body.replace(/</g, "&lt;")}</div>
+    </div>`).join("");
+  el.querySelectorAll(".item").forEach((it, i) => it.addEventListener("click", () =>
+    window.pywebview.api.copy_text(items[items.length - 1 - i][2])));
+}
+setInterval(() => {
+  if (document.getElementById("panel").style.display === "flex") renderHistory();
+}, 1200);
+</script>
+</body>
+</html>

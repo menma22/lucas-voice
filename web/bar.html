@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Lucas Bar</title>
+<style>
+  :root {
+    --glass-edge: rgba(255, 255, 255, 0.16);
+    --glass-sheen: rgba(255, 255, 255, 0.07);
+    --text: #eaf0ff;
+    --text-dim: #93a0c8;
+    --accent: #565f89;
+    --radius: 16px;   /* SetWindowRgn の角丸（CORNER_CSS=32 直径）と一致させること */
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+  html, body { overflow: hidden; height: 100%; background: transparent; }
+  body {
+    display: flex; flex-direction: column; justify-content: flex-end;
+    font-family: "Yu Gothic UI", sans-serif;
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ===== 履歴パネル（タイルの上に展開） ===== */
+  #panel {
+    display: none; height: 308px;
+    border-radius: var(--radius) var(--radius) 0 0;
+    border: 1px solid var(--glass-edge); border-bottom: none;
+    flex-direction: column; overflow: hidden;
+  }
+  body.acrylic #panel { background: rgba(9, 12, 24, 0.66); }
+  body.solid  #panel { background: linear-gradient(180deg, #141a2e, #0b0e1c); }
+  #panel header {
+    padding: 10px 14px 8px; font-size: 9.5px; letter-spacing: .16em;
+    color: var(--text-dim); font-family: "Cascadia Code", monospace;
+    border-bottom: 1px solid rgba(255,255,255,.06);
+  }
+  #hist { flex: 1; overflow-y: auto; padding: 4px; }
+  #hist::-webkit-scrollbar { width: 4px; }
+  #hist::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 2px; }
+  .item { padding: 6px 9px; border-radius: 9px; margin: 2px 3px; cursor: pointer;
+          transition: background .15s; }
+  .item:hover { background: rgba(255,255,255,.06); }
+  .item .meta { font-family: "Cascadia Code", monospace; font-size: 9px;
+                color: var(--text-dim); margin-bottom: 2px; display: flex; gap: 7px; }
+  .item .meta .mode-dict { color: #5eead4; }
+  .item .meta .mode-talk { color: #93b4ff; }
+  .item .body { font-size: 10.5px; line-height: 1.5; color: var(--text);
+                user-select: text; word-break: break-all; }
+  .empty { text-align: center; color: var(--text-dim); font-size: 10.5px; padding: 34px 0; }
+
+  /* ===== 正方形リキッドグラス・タイル ===== */
+  #tile {
+    position: relative; flex: 0 0 auto;
+    width: 100%; height: 116px;
+    border-radius: var(--radius);
+    border: 1px solid var(--glass-edge);
+    overflow: hidden;
+  }
+  body.expanded #tile { border-radius: 0 0 var(--radius) var(--radius); border-top: 1px solid rgba(255,255,255,.07); }
+  /* 完全透明グラス（自前サンプラ稼働時）: 背後画像そのまま。膜も枠も線も無し——
+     境界はひずみそのものが語る（2026-07-16 まひろFB「縁はいらない」） */
+  body.acrylic #tile {
+    border-color: transparent;
+    background: transparent;
+  }
+  body.acrylic #tile::after { box-shadow: none; }
+  /* 不透明フォールバック: 自前で夜色ガラスを描く */
+  body.solid #tile {
+    background:
+      radial-gradient(120% 90% at 50% -12%, rgba(255,255,255,.085), transparent 55%),
+      radial-gradient(110% 110% at 50% 46%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 62%),
+      radial-gradient(150% 130% at 18% 4%, #1b2340, #0c101f 58%, #090b15);
+  }
+  /* --- 自前グラスの下地: python が送る「背後の実画像（ごく薄いぼかし）」＋レンズ屈折 ---
+     完全透明のクリアガラス（2026-07-16 まひろFB・Psアイコン参考）。
+     #bdimg=本体 / #bdR・#bdB=縁だけ屈折率を変えたR/Bゴースト（プリズムの色分散） */
+  #backdrop { position: absolute; inset: 0; z-index: 0; overflow: hidden;
+              border-radius: inherit; display: none; }
+  body.acrylic #backdrop { display: block; }
+  #backdrop img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+                  transform: scale(1.12);   /* 厚ガラスの拡大率＝全面に膨らみが出る */
+                  filter: url(#lens) saturate(1.06); }
+  #backdrop img.ghost { mix-blend-mode: screen; opacity: .5; pointer-events: none;
+    -webkit-mask: radial-gradient(118% 118% at 50% 50%, transparent 45%, #000 80%);
+            mask: radial-gradient(118% 118% at 50% 50%, transparent 45%, #000 80%); }
+  #bdR { filter: url(#lensR) saturate(1.2); }
+  #bdB { filter: url(#lensB) saturate(1.2); }
+  /* あからさまにガラス（2026-07-17 まひろFB「テカり・グラスっぽく」）:
+     スペキュラを**流体より上**（z4）に重ねる＝流体がガラスの下に封入されて見える。
+     広い曲面反射＋鋭い斜めハイライト＋右下の返し光。暗い陰は使わない
+     （前版の下部黒ビネットが「黒い線のフチ」に見えた——光だけで立体を出す） */
+  #glassfilm { position: absolute; inset: 0; z-index: 4; pointer-events: none; display: none; }
+  body.acrylic #glassfilm { display: block;
+    background:
+      radial-gradient(150% 95% at 28% -22%, rgba(255,255,255,.27), rgba(255,255,255,.07) 45%, transparent 62%),
+      linear-gradient(118deg, transparent 28%, rgba(255,255,255,.20) 39%, rgba(255,255,255,.05) 48%, transparent 58%),
+      radial-gradient(120% 85% at 80% 112%, rgba(255,255,255,.11), transparent 55%);
+  }
+
+  #tile::before { /* 液体ガラスの斜めの光筋 */
+    content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 3;
+    background: linear-gradient(118deg, transparent 34%, rgba(255,255,255,.065) 47%, rgba(255,255,255,.02) 53%, transparent 66%);
+  }
+  #tile::after { /* 縁の光は極薄ヘアラインのみ——「枠」に見える内側の帯は張らない */
+    content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 3;
+    border-radius: inherit;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.30),
+      inset 0 -1px 0 rgba(255,255,255,.12);
+  }
+  #noise { /* 微細ノイズ＝ガラスの材質感 */
+    position: absolute; inset: 0; pointer-events: none; opacity: .018; z-index: 3;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  /* ※虹彩リム(#rim)は v3.2 で撤去、下部スクリム帯も 2026-07-17 撤去（フチに見える）。
+     ラベルの可読性は強めの text-shadow が担う */
+
+  #orb { position: absolute; inset: 0; width: 100%; height: 100%; display: block; z-index: 2;
+         /* レンズアイ本体。バレルの落ち影だけ薄く（gooフィルタは旧磁性流体用＝不使用） */
+         filter: drop-shadow(0 3px 7px rgba(0,0,0,.32)); }
+  #gloss { position: absolute; inset: 0; width: 100%; height: 100%; display: block; z-index: 2;
+           pointer-events: none; }
+
+  /* ===== 文字（下部・小さく） ===== */
+  #label {
+    position: absolute; left: 8px; right: 8px; bottom: 7px; z-index: 5;
+    text-align: center; font-size: 10px; letter-spacing: .02em;
+    color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    text-shadow: 0 1px 5px rgba(0,0,0,.9), 0 0 2px rgba(0,0,0,.7);
+    pointer-events: none;
+  }
+
+  /* ===== 下書きバッジ（左上・クリックで全消し） ===== */
+  #badge {
+    position: absolute; top: 6px; left: 6px; display: none; z-index: 5;
+    font-size: 8.5px; padding: 2px 7px; border-radius: 9px;
+    color: var(--text);
+    background: color-mix(in srgb, var(--accent) 26%, rgba(10,12,24,.5));
+    border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    cursor: pointer; transition: all .15s ease;
+    backdrop-filter: blur(6px);
+  }
+  #badge:hover { background: rgba(247,118,142,.3); border-color: rgba(247,118,142,.65);
+                 color: #ffd9e0; }
+
+  /* ===== ボタン（右上・ホバーで出現） ===== */
+  #btns {
+    position: absolute; top: 6px; right: 6px; z-index: 5;
+    display: flex; gap: 4px;
+    opacity: 0; transform: translateY(-4px); transition: all .22s ease;
+  }
+  #tile:hover #btns { opacity: 1; transform: none; }
+  .btn {
+    width: 18px; height: 18px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10.5px; cursor: pointer; color: var(--text-dim);
+    background: rgba(16, 20, 38, .55);
+    border: 1px solid rgba(255,255,255,.14);
+    transition: all .15s ease;
+    backdrop-filter: blur(6px);
+  }
+  .btn:hover { color: #fff; background: rgba(255,255,255,.16); transform: scale(1.1); }
+  #btn-close:hover { color: #ff8da3; border-color: rgba(255,141,163,.5); }
+</style>
+</head>
+<body class="solid">
+  <div id="panel">
+    <header>RECOGNITION LOG</header>
+    <div id="hist"></div>
+  </div>
+
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+    <!-- 厚ガラスの屈折。R/Bは屈折率を変えた分散ゴースト用（縁だけmaskで見せる） -->
+    <filter id="lens" x="-5%" y="-5%" width="110%" height="110%" color-interpolation-filters="sRGB">
+      <feImage id="lensmap" x="-5%" y="-5%" width="110%" height="110%"
+               preserveAspectRatio="none" result="map"/>
+      <feDisplacementMap in="SourceGraphic" in2="map" scale="140"
+                         xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <filter id="lensR" x="-5%" y="-5%" width="110%" height="110%" color-interpolation-filters="sRGB">
+      <feImage id="lensmapR" x="-5%" y="-5%" width="110%" height="110%"
+               preserveAspectRatio="none" result="map"/>
+      <feColorMatrix in="SourceGraphic" type="matrix"
+        values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="ch"/>
+      <feDisplacementMap in="ch" in2="map" scale="160"
+                         xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <filter id="lensB" x="-5%" y="-5%" width="110%" height="110%" color-interpolation-filters="sRGB">
+      <feImage id="lensmapB" x="-5%" y="-5%" width="110%" height="110%"
+               preserveAspectRatio="none" result="map"/>
+      <feColorMatrix in="SourceGraphic" type="matrix"
+        values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="ch"/>
+      <feDisplacementMap in="ch" in2="map" scale="122"
+                         xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <filter id="goo" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="b"/>
+      <feColorMatrix in="b" type="matrix"
+        values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 22 -11"/>
+    </filter>
+  </defs></svg>
+
+  <div id="tile" class="pywebview-drag-region">
+    <div id="backdrop"><img id="bdimg" alt=""><img id="bdR" class="ghost" alt=""><img id="bdB" class="ghost" alt=""></div>
+    <div id="glassfilm"></div>
+    <canvas id="orb"></canvas>
+    <canvas id="gloss"></canvas>
+    <div id="noise"></div>
+    <div id="label" class="pywebview-drag-region">待機中</div>
+    <div id="badge" title="クリックで下書きを全部消す"></div>
+    <div id="btns">
+      <div class="btn" id="btn-hist" title="認識ログ">≡</div>
+      <div class="btn" id="btn-dash" title="ダッシュボード">◎</div>
+      <div class="btn" id="btn-close" title="閉じる / 録音キャンセル">✕</div>
+    </div>
+  </div>
+
+<script>
+/* ================= レンズアイ（HAL 9000系のメカニカル・アイ） =================
+   まひろ指定（2026-07-18）: 磁性流体を退役（web/bar_ferrofluid_backup.html に退避）し、
+   「カメラレンズ型の目」へ。レンズらしさをしっかり＝金属バレル＋同心リング＋
+   ガラスドームのスペキュラ。中心の光彩は球体っぽいグラデの核で、
+   **瞳孔（と光彩の開き）が音声レベルで拡大縮小**。
+   - 待機/対話: 機械シャッターの瞬き（ランダム間隔・たまに二度瞬き）
+   - 認識/処理中: 光彩内をスキャンアークが周回
+   - 発話中: 拍でやわらかく明滅
+   - スキンは config [ui] eye_skin: skyblue / unicorn / hal / aurora（poll の cur.eye）
+   まひろ指定（2026-07-19）:
+   - 縁＝**カメラレンズのベゼル**をちゃんと作る（マシンドメタル環＋ローレット刻み＋
+     溝＋内向き斜面＋口金リングの多段構造）
+   - 瞳孔＝黒でなく**白→色のグラデ発光核**。色は config [ui] pupil_color（poll の cur.pupil。
+     既定は青#4fa8f5→白。赤などに設定画面から変更可）
+   大きさ: レンズ外径 = R0 = タイル幅の31% → 直径がタイルの約6割 */
+const cv = document.getElementById("orb");
+const ctx = cv.getContext("2d");
+const gcv = document.getElementById("gloss");
+const gtx = gcv.getContext("2d");
+
+const TAU = Math.PI * 2;
+let W = 116, H = 116, CX = 58, CY = 52, R0 = 35;  /* fitCanvas が実寸から再計算 */
+
+/* 状態ごとの挙動（open=光彩の基礎開度, react=声への感度, scan=処理スキャン, blink=瞬き許可） */
+const MODES = {
+  idle:         { open: .50, react: .35, scan: 0,   bright: .70, blink: 1, fps: 30 },
+  loading:      { open: .60, react: .20, scan: 1.0, bright: .80, blink: 0, fps: 60 },
+  booting:      { open: .60, react: .20, scan: 1.0, bright: .80, blink: 0, fps: 60 },
+  transcribing: { open: .70, react: .25, scan: 1.7, bright: .95, blink: 0, fps: 60 },
+  dictate_proc: { open: .70, react: .25, scan: 1.7, bright: .95, blink: 0, fps: 60 },
+  recording:    { open: .92, react: 1.0, scan: 0,   bright: 1.05, blink: 0, fps: 60 },
+  dictating:    { open: .92, react: 1.0, scan: 0,   bright: 1.05, blink: 0, fps: 60 },
+  active:       { open: .68, react: .55, scan: 0,   bright: .85, blink: 1, fps: 30 },
+  speaking:     { open: .76, react: .20, scan: 0,   bright: 1.0,  blink: 0, fps: 60, pulse: .5, hz: 2.2 },
+  error:        { open: .28, react: 0,   scan: 0,   bright: .55, blink: 0, fps: 30 },
+};
+
+let cur = { key: "idle", accent: "#565f89", label: "待機中", pending: 0, level: 0,
+            glass: false, fluid: "#0b0d14", pupil: "#4fa8f5" };
+let smooth = 0, lastFrame = 0;
+let scanPhase = Math.random() * 9;          /* 処理スキャンアークの周回位相 */
+let blinkStart = -9, nextBlink = 2 + Math.random() * 3;   /* 機械シャッター瞬き */
+
+/* --- 調整ノブ（一箇所に集約） --- */
+const CORE_MIN = 0.17, CORE_MAX = 0.17;  /* コア球半径 = RL×(MIN + MAX×lvl)＝声で拡縮 */
+const CORE_GLOW = 1.45;   /* コア球の接触グロー半径（×Rp）。上げるほど周囲へにじむ */
+
+/* 虹コア（pupil_color = "rainbow"）: まひろが気に入っていたユニコーン虹をコア球に継承 */
+const RAINBOW = [[0, "#ffd6ee"], [0.2, "#e7d6ff"], [0.4, "#cfe6ff"],
+                 [0.6, "#d4fff1"], [0.8, "#fff2d6"], [1, "#ffd6ee"]];
+
+/* コア球パレット: config [ui] pupil_color の1色から「白コア→色→深色」のグラデを導出。
+   色が変わったときだけ再計算（毎フレームのパースを避ける） */
+let pupilPal = null, pupilKey = "";
+function hexRgb(h) {
+  const v = parseInt(String(h).replace("#", ""), 16);
+  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+}
+function mixc(a, b, k) {
+  return [Math.round(a[0] + (b[0] - a[0]) * k),
+          Math.round(a[1] + (b[1] - a[1]) * k),
+          Math.round(a[2] + (b[2] - a[2]) * k)];
+}
+const rgbs = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+function getPupilPal() {
+  const key = String(cur.pupil || "#4fa8f5").trim().toLowerCase();
+  if (key !== pupilKey) {
+    const WHITE = [255, 255, 255], DARK = [3, 5, 12];
+    if (key === "rainbow" || key === "unicorn") {
+      pupilPal = { rainbow: true, mid: [255, 255, 255], glow: [232, 206, 255] };
+    } else {
+      let c = hexRgb(key);
+      if (c.some(Number.isNaN)) c = [79, 168, 245];   /* 不正値は既定の青 */
+      pupilPal = { rainbow: false, core: WHITE, mid: mixc(c, WHITE, 0.55), base: c,
+                   deep: mixc(c, DARK, 0.52), glow: c };
+    }
+    pupilKey = key;
+  }
+  return pupilPal;
+}
+
+/* キャンバスを実ピクセルに合わせ、タイル実寸から流体ジオメトリを再計算 */
+let dpr = 1;
+function fitCanvas() {
+  const r = cv.getBoundingClientRect();
+  dpr = window.devicePixelRatio || 1;
+  W = r.width; H = r.height;
+  CX = W / 2;
+  CY = H / 2 - Math.max(6, H * 0.055);   /* ラベル分わずかに上 */
+  R0 = W * 0.31;   /* レンズ外径。ベゼルの分わずかに拡大（2026-07-19） */
+  for (const c of [cv, gcv]) {
+    const w = Math.round(r.width * dpr), h = Math.round(r.height * dpr);
+    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  }
+}
+fitCanvas();
+window.addEventListener("resize", fitCanvas);
+/* 光沢キャンバスは旧磁性流体用＝レンズアイでは未使用（一度だけ消す） */
+gtx.setTransform(1, 0, 0, 1, 0, 0);
+gtx.clearRect(0, 0, gcv.width, gcv.height);
+
+function circle(c, x, y, r) {
+  c.beginPath();
+  c.arc(x, y, r, 0, TAU);
+  c.fill();
+}
+
+function drawOrb(now, dt) {
+  const P = MODES[cur.key] || MODES.idle;
+
+  /* fps 制御: 静かな対話中は 30fps に落として CPU を返す */
+  const budget = 1000 / (P.fps === 30 && smooth < 0.06 ? 30 : 60);
+  if (now - lastFrame < budget - 2) return;
+  lastFrame = now;
+  const t = now / 1000;
+
+  const hot = cur.key === "recording" || cur.key === "dictating";
+  const target = Math.min(1, cur.level * (hot ? 1.7 : 0.8));
+  smooth += (target - smooth) * (target > smooth ? 0.5 : 0.08);
+  const pulse = P.pulse ? (0.5 + 0.5 * Math.sin(t * (P.hz || 2) * TAU)) * P.pulse : 0;
+  /* lvl = 目の総合的な「開き・輝き」0..1（瞳孔拡縮の主入力） */
+  const lvl = Math.min(1, P.open * 0.55 + smooth * (P.react || 0) + pulse * 0.55);
+  scanPhase += dt * (0.8 + (P.scan || 0) * 3.2);
+
+  /* 機械シャッターの瞬き（blink 許可モードのみ・ランダム間隔・2割で二度瞬き） */
+  let blinkK = 0;
+  if (P.blink && t > nextBlink && blinkStart < 0) blinkStart = t;
+  if (blinkStart >= 0) {
+    const ph = (t - blinkStart) / 0.26;
+    if (ph >= 1) {
+      blinkStart = -9;
+      nextBlink = t + (Math.random() < 0.2 ? 0.25 : 2.8 + Math.random() * 4.5);
+    } else {
+      let k = ph < 0.45 ? ph / 0.45 : (1 - ph) / 0.55;
+      blinkK = k * k * (3 - 2 * k);   /* smoothstep */
+    }
+  }
+  const aperture = 1 - 0.96 * blinkK;   /* 1=全開 → 瞬きでほぼ全閉 */
+
+  const RL = R0;                       /* レンズ外径 */
+  const RD = RL * 0.76;                /* ガラスドーム径（ベゼルを太らせた 2026-07-19） */
+  const Rp = RL * (CORE_MIN + CORE_MAX * lvl);   /* AIコア球＝声で拡大縮小（音声反応の主役） */
+  const e = Math.min(1, lvl) * P.bright;
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  /* --- 外周の状態グロー（accent 色＝いまのモードが分かる） --- */
+  const av = parseInt((cur.accent || "#565f89").slice(1), 16);
+  const ar = (av >> 16) & 255, ag = (av >> 8) & 255, ab = av & 255;
+  const halo = ctx.createRadialGradient(CX, CY, RL * 0.9, CX, CY, RL * 1.45);
+  halo.addColorStop(0, `rgba(${ar},${ag},${ab},${0.10 + 0.14 * e})`);
+  halo.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = halo;
+  ctx.fillRect(CX - RL * 1.5, CY - RL * 1.5, RL * 3, RL * 3);
+
+  /* --- カメラレンズのベゼル（まひろ指定 2026-07-19「カメラのレンズみたいに縁を」）:
+     外周ベベル光 → マシンドメタル環（conic旋盤目＋ローレット刻み）→ 溝 →
+     内向き斜面（奥へ落ちる筒）→ 口金リング → ドーム、の多段構造 --- */
+  const met = ctx.createConicGradient(-0.5, CX, CY);   /* 旋盤目＝周方向の明暗ゆらぎ */
+  for (let i = 0; i <= 48; i++) {
+    const s = i / 48;
+    const lum = 0.30 + 0.22 * Math.sin(s * TAU * 2 - 1.2) + 0.10 * Math.sin(s * TAU * 7 + 0.7);
+    const v = Math.round(34 + 46 * Math.max(0, lum));
+    met.addColorStop(s, `rgb(${v},${v + 4},${v + 12})`);
+  }
+  ctx.fillStyle = met;
+  circle(ctx, CX, CY, RL);
+  const shade = ctx.createLinearGradient(CX, CY - RL, CX, CY + RL);   /* 共通の上方光 */
+  shade.addColorStop(0, "rgba(255,255,255,.18)");
+  shade.addColorStop(0.35, "rgba(255,255,255,0)");
+  shade.addColorStop(0.85, "rgba(0,0,0,.30)");
+  shade.addColorStop(1, "rgba(0,0,0,.12)");
+  ctx.fillStyle = shade;
+  circle(ctx, CX, CY, RL);
+  ctx.strokeStyle = "rgba(0,0,0,.28)";   /* ローレット（グリップの刻み） */
+  ctx.lineWidth = 1;
+  for (let i = 0; i < 56; i++) {
+    const a2 = (i / 56) * TAU;
+    ctx.beginPath();
+    ctx.moveTo(CX + Math.cos(a2) * RL * 0.985, CY + Math.sin(a2) * RL * 0.985);
+    ctx.lineTo(CX + Math.cos(a2) * RL * 0.905, CY + Math.sin(a2) * RL * 0.905);
+    ctx.stroke();
+  }
+  const bevel = ctx.createLinearGradient(CX, CY - RL, CX, CY + RL);   /* 外縁のベベル光 */
+  bevel.addColorStop(0, "rgba(255,255,255,.50)");
+  bevel.addColorStop(0.5, "rgba(255,255,255,.10)");
+  bevel.addColorStop(1, "rgba(255,255,255,.26)");
+  ctx.strokeStyle = bevel;
+  ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.arc(CX, CY, RL - 0.7, 0, TAU); ctx.stroke();
+  ctx.strokeStyle = "rgba(0,0,0,.55)";   /* 溝（メタル環と斜面の境） */
+  ctx.lineWidth = 1.6;
+  ctx.beginPath(); ctx.arc(CX, CY, RL * 0.895, 0, TAU); ctx.stroke();
+  const slope = ctx.createLinearGradient(CX, CY - RL, CX, CY + RL);   /* 逆光＝奥へ落ちる斜面 */
+  slope.addColorStop(0, "#0f131c");
+  slope.addColorStop(0.6, "#1b212d");
+  slope.addColorStop(1, "#2b3342");
+  ctx.fillStyle = slope;
+  circle(ctx, CX, CY, RL * 0.885);
+  ctx.strokeStyle = "rgba(255,255,255,.10)";   /* 口金リング（ドーム手前の細環） */
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(CX, CY, RD + 1.8, 0, TAU); ctx.stroke();
+  ctx.strokeStyle = "rgba(0,0,0,.65)";
+  ctx.lineWidth = 1.8;
+  ctx.beginPath(); ctx.arc(CX, CY, RD + 0.5, 0, TAU); ctx.stroke();
+
+  /* --- ガラスドームの底（暗い筒の奥） --- */
+  const dome = ctx.createRadialGradient(CX - RD * 0.2, CY - RD * 0.25, RD * 0.1, CX, CY, RD);
+  dome.addColorStop(0, "#101624");
+  dome.addColorStop(0.7, "#070a12");
+  dome.addColorStop(1, "#04060b");
+  ctx.fillStyle = dome;
+  circle(ctx, CX, CY, RD);
+
+  /* --- レンズ内部（無彩色）＋中心のAIコア球: シャッター開度 aperture でクリップ＝機械瞬き
+     まひろ指定 2026-07-19「中心の玉だけ色がついてる感じに・周りのにじみは消して」:
+     光彩の色面と広域ブルームを撤去し、内部は素通しの暗いレンズ素子（白の細い光だけ）に。
+     色を持つのは中心のコア球ひとつだけ（HAL 9000 の構図そのもの） --- */
+  const A = RD * 1.02 * aperture;
+  if (A > 0.5) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(CX, CY, A, 0, TAU);
+    ctx.clip();
+
+    /* 内部レンズ素子の同心リング（無彩色＝奥行きだけを足す） */
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "rgba(255,255,255,.075)";
+    ctx.beginPath(); ctx.arc(CX, CY, RD * 0.72, 0, TAU); ctx.stroke();
+    ctx.strokeStyle = "rgba(255,255,255,.045)";
+    ctx.beginPath(); ctx.arc(CX, CY, RD * 0.47, 0, TAU); ctx.stroke();
+
+    /* 絞り羽根の放射スジ（ごく淡い白＝質感のみ。色は持たせない） */
+    ctx.strokeStyle = "rgba(255,255,255,.05)";
+    for (let i = 0; i < 36; i++) {
+      const a2 = (i / 36) * TAU + t * 0.03;
+      ctx.beginPath();
+      ctx.moveTo(CX + Math.cos(a2) * RD * 0.30, CY + Math.sin(a2) * RD * 0.30);
+      ctx.lineTo(CX + Math.cos(a2) * RD * 0.93, CY + Math.sin(a2) * RD * 0.93);
+      ctx.stroke();
+    }
+
+    /* 処理中スキャン: レンズ内を周回する明アーク＋残像（白） */
+    if (P.scan) {
+      const rs = RD * 0.60;
+      ctx.lineCap = "round";
+      for (let k = 0; k < 3; k++) {
+        ctx.strokeStyle = `rgba(255,255,255,${0.55 / (k + 1)})`;
+        ctx.lineWidth = 2.4 - k * 0.6;
+        ctx.beginPath();
+        ctx.arc(CX, CY, rs, scanPhase * 2.2 - k * 0.5, scanPhase * 2.2 - k * 0.5 + 0.9);
+        ctx.stroke();
+      }
+    }
+
+    /* --- AIコア球（この目で唯一の色。config [ui] pupil_color / dashboardから変更可） --- */
+    const pp = getPupilPal();
+    const gr = Rp * CORE_GLOW;   /* 接触グローだけ＝周囲へ広くにじませない */
+    const pglow = ctx.createRadialGradient(CX, CY, Rp * 0.92, CX, CY, gr);
+    pglow.addColorStop(0, rgbs(pp.glow, 0.30 + 0.22 * e));
+    pglow.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = pglow;
+    circle(ctx, CX, CY, gr);
+
+    if (pp.rainbow) {            /* 虹コア: 回転する conic ＋ 白コアで球体に */
+      const cg = ctx.createConicGradient(t * 0.3, CX, CY);
+      for (const [s, c] of RAINBOW) cg.addColorStop(s, c);
+      ctx.fillStyle = cg;
+      circle(ctx, CX, CY, Rp);
+      const core = ctx.createRadialGradient(CX - Rp * 0.24, CY - Rp * 0.28, 0, CX, CY, Rp);
+      core.addColorStop(0, "rgba(255,255,255,.90)");
+      core.addColorStop(0.42, "rgba(255,255,255,.14)");
+      core.addColorStop(1, "rgba(70,50,105,.50)");
+      ctx.fillStyle = core;
+      circle(ctx, CX, CY, Rp);
+    } else {
+      const pup = ctx.createRadialGradient(CX - Rp * 0.24, CY - Rp * 0.28, 0, CX, CY, Rp);
+      pup.addColorStop(0, rgbs(pp.core, 1));    /* 白コア（上左寄り＝球体のハイライト） */
+      pup.addColorStop(0.32, rgbs(pp.mid, 1));
+      pup.addColorStop(0.76, rgbs(pp.base, 1));
+      pup.addColorStop(1, rgbs(pp.deep, 1));    /* 縁は深色＝球の落ち際 */
+      ctx.fillStyle = pup;
+      circle(ctx, CX, CY, Rp);
+    }
+    ctx.strokeStyle = rgbs(pp.mid, 0.30 + 0.30 * e);   /* 球の縁の明環 */
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(CX, CY, Rp - 0.5, 0, TAU); ctx.stroke();
+    ctx.fillStyle = "rgba(255,255,255,.72)";           /* ガラス球のハイライト点 */
+    circle(ctx, CX - Rp * 0.36, CY - Rp * 0.40, Rp * 0.17);
+    ctx.restore();
+  }
+
+  /* --- ドームのガラス反射（スペキュラ）: レンズらしさの決め手 --- */
+  const g1 = ctx.createRadialGradient(
+    CX - RD * 0.38, CY - RD * 0.44, 0, CX - RD * 0.38, CY - RD * 0.44, RD * 0.34);
+  g1.addColorStop(0, "rgba(255,255,255,.85)");
+  g1.addColorStop(0.35, "rgba(255,255,255,.28)");
+  g1.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = g1;
+  circle(ctx, CX - RD * 0.38, CY - RD * 0.44, RD * 0.34);
+  ctx.strokeStyle = "rgba(255,255,255,.20)";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(CX, CY, RD * 0.86, TAU * 0.08, TAU * 0.22);   /* 右下の弧リフレクション */
+  ctx.stroke();
+  ctx.strokeStyle = "rgba(255,255,255,.10)";
+  ctx.lineWidth = 3.5;
+  ctx.beginPath();
+  ctx.arc(CX, CY, RD * 0.70, TAU * 0.55, TAU * 0.66);   /* 左上の副次弧 */
+  ctx.stroke();
+}
+
+let last = performance.now();
+(function loop(now) {
+  if (!document.hidden) drawOrb(now, Math.min(0.05, (now - last) / 1000));
+  last = now;
+  requestAnimationFrame(loop);
+})(last);
+
+/* ================= 自前グラスの屈折（iOS Liquid Glass 級の縁のひずみ） =================
+   python が 0.6s 毎に送る「背後の実画像」に feDisplacementMap を掛ける。
+   変位マップ = squircle（角丸矩形）の距離場: 中心45%は無変位、縁に向かって
+   外向き法線方向へ急増し、内向きにサンプリング（縁が内側の景色を折り込む
+   ＝厚い凸レンズ。内向きなので画像外参照が起きず破綻しない）。
+   同じマップを R/B ゴースト（scale違い）にも配って縁のプリズム色分散を出す。 */
+(function initLens() {
+  const m = 128, c = document.createElement("canvas");
+  c.width = c.height = m;
+  const g = c.getContext("2d");
+  const im = g.createImageData(m, m);
+  const P = 5;   /* squircle 次数（角丸矩形の等高線） */
+  for (let y = 0; y < m; y++) {
+    for (let x = 0; x < m; x++) {
+      const nx = (x / (m - 1)) * 2 - 1, ny = (y / (m - 1)) * 2 - 1;
+      const d = Math.pow(Math.pow(Math.abs(nx), P) + Math.pow(Math.abs(ny), P), 1 / P);
+      /* 縁に行くほど強く: 素通しは中心12%だけ、広域に2.2乗で立ち上がる
+         （2026-07-16 まひろFB「歪弱すぎてガラス感ない」→ 広く・強く） */
+      const t = Math.max(0, (d - 0.12) / 0.88);
+      let f = Math.pow(Math.min(1, t), 2.2);
+      /* 有機的なゆらぎ（吹きガラスの不均一）＝角度方向に緩く変調 → リキッド感 */
+      const th = Math.atan2(ny, nx);
+      f *= 1 + 0.15 * Math.sin(3 * th + 1.7) + 0.08 * Math.sin(5 * th + 0.6);
+      f = Math.min(1, Math.max(0, f));
+      let gx = Math.sign(nx) * Math.pow(Math.abs(nx), P - 1);
+      let gy = Math.sign(ny) * Math.pow(Math.abs(ny), P - 1);
+      const gl = Math.hypot(gx, gy) || 1;
+      gx /= gl; gy /= gl;                        /* 外向き法線 */
+      const i = (y * m + x) * 4;
+      im.data[i] = 128 - gx * f * 126;           /* 内向きに折り込む＝画像外参照なし */
+      im.data[i + 1] = 128 - gy * f * 126;
+      im.data[i + 2] = 128;
+      im.data[i + 3] = 255;
+    }
+  }
+  g.putImageData(im, 0, 0);
+  const uri = c.toDataURL();
+  for (const id of ["lensmap", "lensmapR", "lensmapB"]) {
+    document.getElementById(id).setAttribute("href", uri);
+  }
+})();
+window.setBackdrop = (src) => {
+  for (const id of ["bdimg", "bdR", "bdB"]) document.getElementById(id).src = src;
+};
+
+/* ================= 状態ポーリング ================= */
+const label = document.getElementById("label");
+const badge = document.getElementById("badge");
+
+/* DPIスケール合わせ: 現運用は scale=1.0 固定（非認識プロセス）。契約は維持 */
+let appliedScale = 0;
+function applyScale(sc) {
+  if (sc && sc > 0 && Math.abs(sc - appliedScale) > 0.01) {
+    document.documentElement.style.zoom = sc;
+    appliedScale = sc;
+  }
+}
+
+async function poll() {
+  try {
+    const s = await window.pywebview.api.poll();
+    if (!s) return;
+    applyScale(s.scale);
+    cur = s;
+    document.body.classList.toggle("acrylic", !!s.glass);
+    document.body.classList.toggle("solid", !s.glass);
+    document.documentElement.style.setProperty("--accent", s.accent);
+    label.textContent = s.label;
+    if (s.pending > 0) { badge.style.display = "block"; badge.textContent = `下書き ${s.pending}`; }
+    else badge.style.display = "none";
+  } catch (e) { /* bridge 未準備 */ }
+}
+setInterval(poll, 66);
+
+/* ================= ボタン ================= */
+document.getElementById("btn-close").addEventListener("click", () =>
+  window.pywebview.api.close_clicked());
+document.getElementById("badge").addEventListener("click", () =>
+  window.pywebview.api.clear_pending());
+document.getElementById("btn-dash").addEventListener("click", () =>
+  window.pywebview.api.open_dashboard());
+document.getElementById("btn-hist").addEventListener("click", async () => {
+  const panel = document.getElementById("panel");
+  const open = panel.style.display !== "flex";
+  panel.style.display = open ? "flex" : "none";
+  document.body.classList.toggle("expanded", open);
+  await window.pywebview.api.set_expanded(open);
+  if (open) renderHistory();
+});
+
+async function renderHistory() {
+  const items = await window.pywebview.api.history();
+  const el = document.getElementById("hist");
+  if (!items.length) { el.innerHTML = '<div class="empty">まだ認識ログはないよ</div>'; return; }
+  el.innerHTML = items.slice().reverse().map(([ts, mode, body]) => `
+    <div class="item" title="クリックでコピー">
+      <div class="meta"><span>${ts}</span>
+        <span class="${mode.includes("文字") ? "mode-dict" : "mode-talk"}">[${mode}]</span></div>
+      <div class="body">${body.replace(/</g, "&lt;")}</div>
+    </div>`).join("");
+  el.querySelectorAll(".item").forEach((it, i) => it.addEventListener("click", () =>
+    window.pywebview.api.copy_text(items[items.length - 1 - i][2])));
+}
+setInterval(() => {
+  if (document.getElementById("panel").style.display === "flex") renderHistory();
+}, 1200);
+</script>
+</body>
+</html>

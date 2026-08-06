@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>Lucas Bar</title>
+<style>
+  :root {
+    --glass-edge: rgba(255, 255, 255, 0.16);
+    --glass-sheen: rgba(255, 255, 255, 0.07);
+    --text: #eaf0ff;
+    --text-dim: #93a0c8;
+    --accent: #565f89;
+    --radius: 16px;   /* SetWindowRgn の角丸（CORNER_CSS=32 直径）と一致させること */
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+  html, body { overflow: hidden; height: 100%; background: transparent; }
+  body {
+    display: flex; flex-direction: column; justify-content: flex-end;
+    font-family: "Yu Gothic UI", sans-serif;
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ===== 履歴パネル（タイルの上に展開） ===== */
+  #panel {
+    display: none; height: 308px;
+    border-radius: var(--radius) var(--radius) 0 0;
+    border: 1px solid var(--glass-edge); border-bottom: none;
+    flex-direction: column; overflow: hidden;
+  }
+  body.acrylic #panel { background: rgba(9, 12, 24, 0.66); }
+  body.solid  #panel { background: linear-gradient(180deg, #141a2e, #0b0e1c); }
+  #panel header {
+    padding: 10px 14px 8px; font-size: 9.5px; letter-spacing: .16em;
+    color: var(--text-dim); font-family: "Cascadia Code", monospace;
+    border-bottom: 1px solid rgba(255,255,255,.06);
+  }
+  #hist { flex: 1; overflow-y: auto; padding: 4px; }
+  #hist::-webkit-scrollbar { width: 4px; }
+  #hist::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 2px; }
+  .item { padding: 6px 9px; border-radius: 9px; margin: 2px 3px; cursor: pointer;
+          transition: background .15s; }
+  .item:hover { background: rgba(255,255,255,.06); }
+  .item .meta { font-family: "Cascadia Code", monospace; font-size: 9px;
+                color: var(--text-dim); margin-bottom: 2px; display: flex; gap: 7px; }
+  .item .meta .mode-dict { color: #5eead4; }
+  .item .meta .mode-talk { color: #93b4ff; }
+  .item .body { font-size: 10.5px; line-height: 1.5; color: var(--text);
+                user-select: text; word-break: break-all; }
+  .empty { text-align: center; color: var(--text-dim); font-size: 10.5px; padding: 34px 0; }
+
+  /* ===== 正方形リキッドグラス・タイル ===== */
+  #tile {
+    position: relative; flex: 0 0 auto;
+    width: 100%; height: 116px;
+    border-radius: var(--radius);
+    border: 1px solid var(--glass-edge);
+    overflow: hidden;
+  }
+  body.expanded #tile { border-radius: 0 0 var(--radius) var(--radius); border-top: 1px solid rgba(255,255,255,.07); }
+  /* 完全透明グラス（自前サンプラ稼働時）: 背後画像そのまま。膜も枠も線も無し——
+     境界はひずみそのものが語る（2026-07-16 まひろFB「縁はいらない」） */
+  body.acrylic #tile {
+    border-color: transparent;
+    background: transparent;
+  }
+  body.acrylic #tile::after { box-shadow: none; }
+  /* 不透明フォールバック: 自前で夜色ガラスを描く */
+  body.solid #tile {
+    background:
+      radial-gradient(120% 90% at 50% -12%, rgba(255,255,255,.085), transparent 55%),
+      radial-gradient(110% 110% at 50% 46%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 62%),
+      radial-gradient(150% 130% at 18% 4%, #1b2340, #0c101f 58%, #090b15);
+  }
+  /* --- 自前グラスの下地: python が送る「背後の実画像（ごく薄いぼかし）」＋レンズ屈折 ---
+     完全透明のクリアガラス（2026-07-16 まひろFB・Psアイコン参考）。
+     #bdimg=本体 / #bdR・#bdB=縁だけ屈折率を変えたR/Bゴースト（プリズムの色分散） */
+  #backdrop { position: absolute; inset: 0; z-index: 0; overflow: hidden;
+              border-radius: inherit; display: none; }
+  body.acrylic #backdrop { display: block; }
+  #backdrop img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+                  transform: scale(1.12);   /* 厚ガラスの拡大率＝全面に膨らみが出る */
+                  filter: url(#lens) saturate(1.06); }
+  #backdrop img.ghost { mix-blend-mode: screen; opacity: .5; pointer-events: none;
+    -webkit-mask: radial-gradient(118% 118% at 50% 50%, transparent 45%, #000 80%);
+            mask: radial-gradient(118% 118% at 50% 50%, transparent 45%, #000 80%); }
+  #bdR { filter: url(#lensR) saturate(1.2); }
+  #bdB { filter: url(#lensB) saturate(1.2); }
+  /* あからさまにガラス（2026-07-17 まひろFB「テカり・グラスっぽく」）:
+     スペキュラを**流体より上**（z4）に重ねる＝流体がガラスの下に封入されて見える。
+     広い曲面反射＋鋭い斜めハイライト＋右下の返し光。暗い陰は使わない
+     （前版の下部黒ビネットが「黒い線のフチ」に見えた——光だけで立体を出す） */
+  #glassfilm { position: absolute; inset: 0; z-index: 4; pointer-events: none; display: none; }
+  body.acrylic #glassfilm { display: block;
+    background:
+      radial-gradient(150% 95% at 28% -22%, rgba(255,255,255,.27), rgba(255,255,255,.07) 45%, transparent 62%),
+      linear-gradient(118deg, transparent 28%, rgba(255,255,255,.20) 39%, rgba(255,255,255,.05) 48%, transparent 58%),
+      radial-gradient(120% 85% at 80% 112%, rgba(255,255,255,.11), transparent 55%);
+  }
+
+  #tile::before { /* 液体ガラスの斜めの光筋 */
+    content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 3;
+    background: linear-gradient(118deg, transparent 34%, rgba(255,255,255,.065) 47%, rgba(255,255,255,.02) 53%, transparent 66%);
+  }
+  #tile::after { /* 縁の光は極薄ヘアラインのみ——「枠」に見える内側の帯は張らない */
+    content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 3;
+    border-radius: inherit;
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.30),
+      inset 0 -1px 0 rgba(255,255,255,.12);
+  }
+  #noise { /* 微細ノイズ＝ガラスの材質感 */
+    position: absolute; inset: 0; pointer-events: none; opacity: .018; z-index: 3;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  /* ※虹彩リム(#rim)は v3.2 で撤去、下部スクリム帯も 2026-07-17 撤去（フチに見える）。
+     ラベルの可読性は強めの text-shadow が担う */
+
+  #orb { position: absolute; inset: 0; width: 100%; height: 100%; display: block; z-index: 2;
+         /* goo = ぼかし→アルファ閾値で円同士が表面張力のように融合（メタボール）。
+            drop-shadow は閾値後の「液体の形」に落ちる＝立体感 */
+         filter: url(#goo) drop-shadow(0 5px 9px rgba(0,0,0,.40)); }
+  #gloss { position: absolute; inset: 0; width: 100%; height: 100%; display: block; z-index: 2;
+           pointer-events: none; }
+
+  /* ===== 文字（下部・小さく） ===== */
+  #label {
+    position: absolute; left: 8px; right: 8px; bottom: 7px; z-index: 5;
+    text-align: center; font-size: 10px; letter-spacing: .02em;
+    color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    text-shadow: 0 1px 5px rgba(0,0,0,.9), 0 0 2px rgba(0,0,0,.7);
+    pointer-events: none;
+  }
+
+  /* ===== 下書きバッジ（左上・クリックで全消し） ===== */
+  #badge {
+    position: absolute; top: 6px; left: 6px; display: none; z-index: 5;
+    font-size: 8.5px; padding: 2px 7px; border-radius: 9px;
+    color: var(--text);
+    background: color-mix(in srgb, var(--accent) 26%, rgba(10,12,24,.5));
+    border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    cursor: pointer; transition: all .15s ease;
+    backdrop-filter: blur(6px);
+  }
+  #badge:hover { background: rgba(247,118,142,.3); border-color: rgba(247,118,142,.65);
+                 color: #ffd9e0; }
+
+  /* ===== ボタン（右上・ホバーで出現） ===== */
+  #btns {
+    position: absolute; top: 6px; right: 6px; z-index: 5;
+    display: flex; gap: 4px;
+    opacity: 0; transform: translateY(-4px); transition: all .22s ease;
+  }
+  #tile:hover #btns { opacity: 1; transform: none; }
+  .btn {
+    width: 18px; height: 18px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10.5px; cursor: pointer; color: var(--text-dim);
+    background: rgba(16, 20, 38, .55);
+    border: 1px solid rgba(255,255,255,.14);
+    transition: all .15s ease;
+    backdrop-filter: blur(6px);
+  }
+  .btn:hover { color: #fff; background: rgba(255,255,255,.16); transform: scale(1.1); }
+  #btn-close:hover { color: #ff8da3; border-color: rgba(255,141,163,.5); }
+</style>
+</head>
+<body class="solid">
+  <div id="panel">
+    <header>RECOGNITION LOG</header>
+    <div id="hist"></div>
+  </div>
+
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+    <!-- 厚ガラスの屈折。R/Bは屈折率を変えた分散ゴースト用（縁だけmaskで見せる） -->
+    <filter id="lens" x="-5%" y="-5%" width="110%" height="110%" color-interpolation-filters="sRGB">
+      <feImage id="lensmap" x="-5%" y="-5%" width="110%" height="110%"
+               preserveAspectRatio="none" result="map"/>
+      <feDisplacementMap in="SourceGraphic" in2="map" scale="140"
+                         xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <filter id="lensR" x="-5%" y="-5%" width="110%" height="110%" color-interpolation-filters="sRGB">
+      <feImage id="lensmapR" x="-5%" y="-5%" width="110%" height="110%"
+               preserveAspectRatio="none" result="map"/>
+      <feColorMatrix in="SourceGraphic" type="matrix"
+        values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="ch"/>
+      <feDisplacementMap in="ch" in2="map" scale="160"
+                         xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <filter id="lensB" x="-5%" y="-5%" width="110%" height="110%" color-interpolation-filters="sRGB">
+      <feImage id="lensmapB" x="-5%" y="-5%" width="110%" height="110%"
+               preserveAspectRatio="none" result="map"/>
+      <feColorMatrix in="SourceGraphic" type="matrix"
+        values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="ch"/>
+      <feDisplacementMap in="ch" in2="map" scale="122"
+                         xChannelSelector="R" yChannelSelector="G"/>
+    </filter>
+    <filter id="goo" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="b"/>
+      <feColorMatrix in="b" type="matrix"
+        values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 22 -11"/>
+    </filter>
+  </defs></svg>
+
+  <div id="tile" class="pywebview-drag-region">
+    <div id="backdrop"><img id="bdimg" alt=""><img id="bdR" class="ghost" alt=""><img id="bdB" class="ghost" alt=""></div>
+    <div id="glassfilm"></div>
+    <canvas id="orb"></canvas>
+    <canvas id="gloss"></canvas>
+    <div id="noise"></div>
+    <div id="label" class="pywebview-drag-region">待機中</div>
+    <div id="badge" title="クリックで下書きを全部消す"></div>
+    <div id="btns">
+      <div class="btn" id="btn-hist" title="認識ログ">≡</div>
+      <div class="btn" id="btn-dash" title="ダッシュボード">◎</div>
+      <div class="btn" id="btn-close" title="閉じる / 録音キャンセル">✕</div>
+    </div>
+  </div>
+
+<script>
+/* ================= 磁性流体（フェロフルイド） =================
+   まひろ指定（2026-07-16・磁性流体スピーカー画像の完全再現）: リアルな液体感が最重要。
+   技法 = メタボール: キャンバスには不透明の円を描くだけにして、CSS 側の #goo
+   フィルタ（ぼかし→アルファ閾値）が円同士を表面張力のようにヌルッと融合させる。
+   - 本体1＋腕5＋衛星滴: 静止時は参考画像のような有機的スプラット（十字/星形）
+   - 認識中（transcribing系）: 腕が進行波でうねる＝波打つ
+   - 録音/発話: 音のアタックで滴が飛び散り、バネで本体へ戻って再融合＝はじける
+   - 色は config [ui] fluid_color（poll の cur.fluid。既定=黒鉄）
+   - 光沢は #gloss キャンバス（goo の閾値に巻き込まれないよう分離）
+   大きさ: R0 = タイル幅の1/4 → 本体まわりの広がりがタイルの約1/2 */
+const cv = document.getElementById("orb");
+const ctx = cv.getContext("2d");
+const gcv = document.getElementById("gloss");
+const gtx = gcv.getContext("2d");
+
+const TAU = Math.PI * 2;
+let W = 116, H = 116, CX = 58, CY = 52, R0 = 35;  /* fitCanvas が実寸から再計算 */
+
+/* 状態ごとの挙動（wave=うねり, splash=飛沫感度, stretch=声で伸びる量, tempo=波の速さ） */
+const MODES = {
+  idle:         { wave: .12, splash: 0,   stretch: .20, tempo: .5,  fps: 30 },
+  loading:      { wave: .55, splash: 0,   stretch: .20, tempo: 1.4, fps: 60 },
+  booting:      { wave: .55, splash: 0,   stretch: .20, tempo: 1.4, fps: 60 },
+  transcribing: { wave: .90, splash: 0,   stretch: .25, tempo: 2.1, fps: 60 },
+  dictate_proc: { wave: .90, splash: 0,   stretch: .25, tempo: 2.1, fps: 60 },
+  recording:    { wave: .30, splash: 1.0, stretch: 1.0, tempo: 1.1, fps: 60 },
+  dictating:    { wave: .30, splash: 1.0, stretch: 1.0, tempo: 1.1, fps: 60 },
+  active:       { wave: .18, splash: .5,  stretch: .55, tempo: .8,  fps: 30 },
+  speaking:     { wave: .30, splash: .45, stretch: .40, tempo: 1.0, fps: 60, pulse: .5, hz: 2.2 },
+  error:        { wave: .05, splash: 0,   stretch: 0,   tempo: .3,  fps: 30 },
+};
+
+let cur = { key: "idle", accent: "#565f89", label: "待機中", pending: 0, level: 0,
+            glass: false, fluid: "#0b0d14" };
+let smooth = 0, phase = Math.random() * 9, lastFrame = 0, lastSplash = 0;
+let fluidLum = 0.05, lumCache = "";
+let drops = [];
+
+/* 液体パーセル＝定形の本体を持たない自由な粒の集合（2026-07-16 まひろ指示:
+   「定形の球体をやめ、液体には中心にいようとする力だけを与える」）。
+   各粒に働くのは①中心向きバネ ②近接反発（一点に潰れない最小限） ③粘性減衰
+   ④ゆらぎ、だけ。静止形は力の均衡から創発し、音のアタックで粒ごと弾け飛び、
+   中心力で戻ったところを goo が再融合する＝形は物理まかせの本物の液体 */
+const PARCELS = [0.40, 0.32, 0.28, 0.25, 0.22, 0.21, 0.19, 0.18,
+                 0.17, 0.16, 0.15, 0.14, 0.13, 0.12]
+  .map((f) => ({
+    f,                                   /* 半径 = R0 * f */
+    x: 0, y: 0, vx: 0, vy: 0,
+    wf: 0.22 + Math.random() * 0.4,      /* 徘徊ゆらぎの周波数 */
+    wp: Math.random() * TAU,
+    kick: 0.75 + Math.random() * 0.7,    /* はじけ方の個体差 */
+  }));
+let parcelsInit = false;
+const SATS = Array.from({ length: 5 }, () => ({
+  ang: Math.random() * TAU,
+  dist: 0.78 + Math.random() * 0.28,
+  r: 3.6 + Math.random() * 2.4,   /* gooのぼかし閾値で消えない最小サイズ（σ6で約4px〜） */
+  sp: (0.04 + Math.random() * 0.10) * (Math.random() < 0.5 ? -1 : 1),
+  bob: Math.random() * TAU,
+}));
+
+/* キャンバスを実ピクセルに合わせ、タイル実寸から流体ジオメトリを再計算 */
+let dpr = 1;
+function fitCanvas() {
+  const r = cv.getBoundingClientRect();
+  dpr = window.devicePixelRatio || 1;
+  W = r.width; H = r.height;
+  CX = W / 2;
+  CY = H / 2 - Math.max(6, H * 0.055);   /* ラベル分わずかに上 */
+  R0 = W * 0.30;   /* 塊の広がりがタイルの約1/2になる基準半径 */
+  for (const c of [cv, gcv]) {
+    const w = Math.round(r.width * dpr), h = Math.round(r.height * dpr);
+    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  }
+  /* goo のぼかしはタイル実寸に比例させる（小タイルで融合が滲みすぎない） */
+  const blurEl = document.querySelector("#goo feGaussianBlur");
+  if (blurEl) blurEl.setAttribute("stdDeviation", Math.max(3.5, W * 0.035).toFixed(1));
+}
+fitCanvas();
+window.addEventListener("resize", fitCanvas);
+
+function lum(hex) {
+  const v = parseInt((hex || "#0b0d14").slice(1), 16);
+  return (((v >> 16) & 255) * 0.30 + ((v >> 8) & 255) * 0.59 + (v & 255) * 0.11) / 255;
+}
+
+function circle(c, x, y, r) {
+  c.beginPath();
+  c.arc(x, y, r, 0, TAU);
+  c.fill();
+}
+
+/* 飛沫: 本体の縁から発射（goo フィルタが分離・再融合の「首」を自動で描く） */
+function spawnDrops(n, energy) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * TAU;
+    const d0 = R0 * (0.50 + Math.random() * 0.25);
+    const sp = 90 + 200 * energy + Math.random() * 70;
+    drops.push({
+      x: CX + Math.cos(a) * d0, y: CY + Math.sin(a) * d0,
+      vx: Math.cos(a) * sp + (Math.random() - 0.5) * 40,
+      vy: Math.sin(a) * sp - 30 - Math.random() * 50,
+      r: 3.4 + Math.random() * 3.0, age: 0,
+    });
+  }
+  if (drops.length > 26) drops.splice(0, drops.length - 26);
+}
+
+function drawOrb(now, dt) {
+  const P = MODES[cur.key] || MODES.idle;
+
+  /* fps 制御: 静かな対話中は 30fps に落として CPU を返す */
+  const budget = 1000 / (P.fps === 30 && smooth < 0.06 ? 30 : 60);
+  if (now - lastFrame < budget - 2) return;
+  lastFrame = now;
+  const t = now / 1000;
+
+  const hot = cur.key === "recording" || cur.key === "dictating";
+  const target = Math.min(1, cur.level * (hot ? 1.7 : 0.8));
+  const pulse = P.pulse ? (0.5 + 0.5 * Math.sin(t * (P.hz || 2) * TAU)) * P.pulse : 0;
+
+  /* はじける: 音のアタックで液体パーセル自体を弾き飛ばす（＋細かい飛沫も追加）。
+     中心力が戻し、goo が再融合の首を描く */
+  if (P.splash && now - lastSplash > 140) {
+    let burst = 0;
+    if (target - smooth > 0.11) burst = Math.max(target, 0.35);
+    else if (P.pulse && pulse > P.pulse * 0.82 && Math.random() < 0.35) burst = 0.3;
+    if (burst > 0) {
+      /* はじけすぎない: 塊は保ったまま縁が跳ねる程度。固定核（[0]）は蹴らない */
+      for (const p of PARCELS) {
+        if (p === PARCELS[0]) continue;
+        let ox = p.x - CX, oy = p.y - CY;
+        const dd = Math.hypot(ox, oy);
+        if (dd > 2) { ox /= dd; oy /= dd; }
+        else { const a = Math.random() * TAU; ox = Math.cos(a); oy = Math.sin(a); }
+        const v0 = (80 + 190 * burst) * P.splash * p.kick
+                 * (0.5 + 0.9 * Math.random()) / Math.sqrt(p.f / 0.2);
+        p.vx += ox * v0;
+        p.vy += oy * v0 - 20;
+      }
+      spawnDrops(1 + Math.round(2 * burst * P.splash), burst * 0.8);
+      lastSplash = now;
+    }
+  }
+  smooth += (target - smooth) * (target > smooth ? 0.5 : 0.08);
+  phase += dt * (0.6 + P.tempo * 0.4 + smooth);
+
+  /* 滴の物理: 本体へのバネ＋僅かな重力＋減衰 → 本体に近づくと再融合して消える */
+  for (const d of drops) {
+    d.vx += (CX - d.x) * 9 * dt;
+    d.vy += ((CY - d.y) * 9 + 120) * dt;
+    const damp = Math.max(0, 1 - 2.0 * dt);
+    d.vx *= damp; d.vy *= damp;
+    d.x += d.vx * dt; d.y += d.vy * dt;
+    d.age += dt;
+  }
+  drops = drops.filter((d) =>
+    d.age < 1.8 && !(d.age > 0.30 && Math.hypot(d.x - CX, d.y - CY) < R0 * 0.55));
+
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (cur.fluid !== lumCache) { lumCache = cur.fluid; fluidLum = lum(cur.fluid); }
+  ctx.fillStyle = cur.fluid || "#0b0d14";
+
+  /* ===== 液体パーセル物理 =====
+     初回だけ中心付近に散布（以後の形はすべて力の均衡から創発） */
+  if (!parcelsInit) {
+    parcelsInit = true;
+    for (const p of PARCELS) {
+      const a = Math.random() * TAU, d0 = Math.random() * R0 * 0.4;
+      p.x = CX + Math.cos(a) * d0;
+      p.y = CY + Math.sin(a) * d0;
+    }
+  }
+  const damp = 2.2;
+  for (let i = 0; i < PARCELS.length; i++) {
+    const p = PARCELS[i];
+    /* 中心核は完全固定（2026-07-17 まひろ指示: 「本当の中心の一点は固定・
+       どんなに弾けても中心は繋がってる」）。最大パーセルをピン留め＝不動の核 */
+    if (i === 0) {
+      p.x = CX; p.y = CY;
+      p.vx = 0; p.vy = 0;
+      p.ax = 0; p.ay = 0;
+      continue;
+    }
+    /* ①中心にいようとする力——中心に近いほど強い（バネと逆のプロファイル）＋
+       中心近傍の短距離ロック項＝内側ほど固定に漸近し、外側の粒ほど自由 */
+    const dxc = CX - p.x, dyc = CY - p.y;
+    const dc = Math.hypot(dxc, dyc) || 0.001;
+    const L = R0 * 0.50;   /* 減衰を速め＝中心は強く握るが塊の広がりは殺さない */
+    const near0 = Math.max(0, 1 - dc / (R0 * 0.55));
+    const grip = 4600 * (dc / (dc + 3)) * (L / (L + dc)) + 2600 * near0 * near0;
+    let ax = (dxc / dc) * grip;
+    let ay = (dyc / dc) * grip;
+    /* ④常時のゆらぎ（液面の落ち着かなさ＝形が生き続ける） */
+    ax += Math.sin(t * p.wf * TAU + p.wp) * 150;
+    ay += Math.cos(t * p.wf * TAU * 0.8 + p.wp * 1.7) * 150;
+    /* 音圧: 声で外へ膨らむ / 認識中は放射状の進行波（波打つ） / 発話の拍 */
+    let ox = p.x - CX, oy = p.y - CY;
+    const dd = Math.hypot(ox, oy) || 1;
+    ox /= dd; oy /= dd;
+    const wave = Math.sin(t * 3.1 * P.tempo + i * 2.51) * P.wave;
+    const rad = 260 * smooth * P.stretch + 560 * wave + 420 * pulse;
+    ax += ox * rad;
+    ay += oy * rad;
+    /* タイルからはみ出さない柔らかい壁 */
+    if (dd > R0 * 1.35) {
+      ax -= ox * (dd - R0 * 1.35) * 90;
+      ay -= oy * (dd - R0 * 1.35) * 90;
+    }
+    p.ax = ax; p.ay = ay;
+  }
+  /* ②近接反発＋ひっつき力（表面張力。2026-07-16 まひろ指示「流体間のひっつき力も」）:
+     接触より近い→押し合う / 接触〜2.1倍の帯→山形の引力で吸い付く
+     ＝離れた粒が能動的に本体へ戻り、塊が千切れにくい一体の液体になる */
+  for (let i = 0; i < PARCELS.length; i++) {
+    for (let j = i + 1; j < PARCELS.length; j++) {
+      const a = PARCELS[i], b = PARCELS[j];
+      const rr = (a.f + b.f) * R0 * 0.85;
+      const near = rr * 1.3, reach = rr * 2.6;
+      let dx = b.x - a.x, dy = b.y - a.y;
+      const dd = Math.hypot(dx, dy) || 0.001;
+      let f = 0;
+      if (dd < rr) {
+        f = -((rr - dd) / rr) * 4400;            /* 反発（広め＝塊が空間を持つ） */
+      } else if (dd > near && dd < reach) {
+        /* ひっつきは「離れた粒の回収」専用——自然間隔(rr〜near)では働かせない
+           （帯が自然間隔に重なると常時圧縮になり豆に潰れる。実測済み） */
+        const u = (dd - near) / (reach - near);
+        f = Math.sin(u * Math.PI) * 1100;
+      }
+      if (f) {
+        dx /= dd; dy /= dd;
+        a.ax += dx * f; a.ay += dy * f;
+        b.ax -= dx * f; b.ay -= dy * f;
+      }
+    }
+  }
+  /* ③粘性減衰つき積分（固定核[0]は動かさない） */
+  const dk = Math.max(0, 1 - damp * dt);
+  for (let i = 1; i < PARCELS.length; i++) {
+    const p = PARCELS[i];
+    p.vx = (p.vx + p.ax * dt) * dk;
+    p.vy = (p.vy + p.ay * dt) * dk;
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+  }
+  PARCELS[0].x = CX;
+  PARCELS[0].y = CY;
+
+  /* パーセル描画（gooが融合の首を描く） */
+  for (let i = 0; i < PARCELS.length; i++) {
+    const p = PARCELS[i];
+    circle(ctx, p.x, p.y, R0 * p.f * (1 + 0.05 * Math.sin(t * 1.3 + i)));
+  }
+
+  /* 衛星滴（参考画像の周囲の小さな点） */
+  for (const s of SATS) {
+    s.ang += s.sp * dt;
+    const dd = R0 * (s.dist + 0.05 * Math.sin(t * 0.8 + s.bob));
+    circle(ctx, CX + Math.cos(s.ang) * dd, CY + Math.sin(s.ang) * dd, s.r);
+  }
+
+  /* 飛沫（時間で少し縮む） */
+  for (const d of drops) circle(ctx, d.x, d.y, d.r * (1 - d.age * 0.15));
+
+  /* ===== 光沢（別キャンバス）: 液塊の重心に追従し、散っている間は薄くなる ===== */
+  let sw = 0, gx2 = 0, gy2 = 0;
+  for (const p of PARCELS) { const w2 = p.f * p.f; sw += w2; gx2 += p.x * w2; gy2 += p.y * w2; }
+  gx2 /= sw; gy2 /= sw;
+  let spread = 0;
+  for (const p of PARCELS) spread += Math.hypot(p.x - gx2, p.y - gy2) * (p.f * p.f) / sw;
+  const cohesion = Math.max(0, Math.min(1, 1.5 - spread / (R0 * 0.55)));
+  const rG = R0 * 0.62;
+  gtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  gtx.clearRect(0, 0, W, H);
+  const gk = (fluidLum > 0.6 ? 0.45 : 1) * (0.35 + 0.65 * cohesion);
+  gtx.save();
+  gtx.beginPath();
+  gtx.arc(gx2, gy2, rG * 1.02, 0, TAU);
+  gtx.clip();
+  const sx = gx2 - rG * 0.30, sy = gy2 - rG * 0.38;
+  const sheen = gtx.createRadialGradient(sx, sy, 0, sx, sy, rG * 0.9);
+  sheen.addColorStop(0, `rgba(255,255,255,${0.30 * gk})`);
+  sheen.addColorStop(0.45, `rgba(255,255,255,${0.08 * gk})`);
+  sheen.addColorStop(1, "rgba(255,255,255,0)");
+  gtx.fillStyle = sheen;
+  gtx.fillRect(gx2 - rG, gy2 - rG, rG * 2, rG * 2);
+  const hx = gx2 - rG * 0.36, hy = gy2 - rG * 0.44;
+  const spot = gtx.createRadialGradient(hx, hy, 0, hx, hy, rG * 0.18);
+  spot.addColorStop(0, `rgba(255,255,255,${0.55 * gk})`);
+  spot.addColorStop(1, "rgba(255,255,255,0)");
+  gtx.fillStyle = spot;
+  gtx.fillRect(gx2 - rG, gy2 - rG, rG * 2, rG * 2);
+  const bx = gx2 + rG * 0.20, by = gy2 + rG * 0.55;
+  const rebound = gtx.createRadialGradient(bx, by, 0, bx, by, rG * 0.6);
+  rebound.addColorStop(0, `rgba(200,220,255,${0.10 * gk})`);
+  rebound.addColorStop(1, "rgba(0,0,0,0)");
+  gtx.fillStyle = rebound;
+  gtx.fillRect(gx2 - rG, gy2 - rG, rG * 2, rG * 2);
+  gtx.restore();
+}
+
+let last = performance.now();
+(function loop(now) {
+  if (!document.hidden) drawOrb(now, Math.min(0.05, (now - last) / 1000));
+  last = now;
+  requestAnimationFrame(loop);
+})(last);
+
+/* ================= 自前グラスの屈折（iOS Liquid Glass 級の縁のひずみ） =================
+   python が 0.6s 毎に送る「背後の実画像」に feDisplacementMap を掛ける。
+   変位マップ = squircle（角丸矩形）の距離場: 中心45%は無変位、縁に向かって
+   外向き法線方向へ急増し、内向きにサンプリング（縁が内側の景色を折り込む
+   ＝厚い凸レンズ。内向きなので画像外参照が起きず破綻しない）。
+   同じマップを R/B ゴースト（scale違い）にも配って縁のプリズム色分散を出す。 */
+(function initLens() {
+  const m = 128, c = document.createElement("canvas");
+  c.width = c.height = m;
+  const g = c.getContext("2d");
+  const im = g.createImageData(m, m);
+  const P = 5;   /* squircle 次数（角丸矩形の等高線） */
+  for (let y = 0; y < m; y++) {
+    for (let x = 0; x < m; x++) {
+      const nx = (x / (m - 1)) * 2 - 1, ny = (y / (m - 1)) * 2 - 1;
+      const d = Math.pow(Math.pow(Math.abs(nx), P) + Math.pow(Math.abs(ny), P), 1 / P);
+      /* 縁に行くほど強く: 素通しは中心12%だけ、広域に2.2乗で立ち上がる
+         （2026-07-16 まひろFB「歪弱すぎてガラス感ない」→ 広く・強く） */
+      const t = Math.max(0, (d - 0.12) / 0.88);
+      let f = Math.pow(Math.min(1, t), 2.2);
+      /* 有機的なゆらぎ（吹きガラスの不均一）＝角度方向に緩く変調 → リキッド感 */
+      const th = Math.atan2(ny, nx);
+      f *= 1 + 0.15 * Math.sin(3 * th + 1.7) + 0.08 * Math.sin(5 * th + 0.6);
+      f = Math.min(1, Math.max(0, f));
+      let gx = Math.sign(nx) * Math.pow(Math.abs(nx), P - 1);
+      let gy = Math.sign(ny) * Math.pow(Math.abs(ny), P - 1);
+      const gl = Math.hypot(gx, gy) || 1;
+      gx /= gl; gy /= gl;                        /* 外向き法線 */
+      const i = (y * m + x) * 4;
+      im.data[i] = 128 - gx * f * 126;           /* 内向きに折り込む＝画像外参照なし */
+      im.data[i + 1] = 128 - gy * f * 126;
+      im.data[i + 2] = 128;
+      im.data[i + 3] = 255;
+    }
+  }
+  g.putImageData(im, 0, 0);
+  const uri = c.toDataURL();
+  for (const id of ["lensmap", "lensmapR", "lensmapB"]) {
+    document.getElementById(id).setAttribute("href", uri);
+  }
+})();
+window.setBackdrop = (src) => {
+  for (const id of ["bdimg", "bdR", "bdB"]) document.getElementById(id).src = src;
+};
+
+/* ================= 状態ポーリング ================= */
+const label = document.getElementById("label");
+const badge = document.getElementById("badge");
+
+/* DPIスケール合わせ: 現運用は scale=1.0 固定（非認識プロセス）。契約は維持 */
+let appliedScale = 0;
+function applyScale(sc) {
+  if (sc && sc > 0 && Math.abs(sc - appliedScale) > 0.01) {
+    document.documentElement.style.zoom = sc;
+    appliedScale = sc;
+  }
+}
+
+async function poll() {
+  try {
+    const s = await window.pywebview.api.poll();
+    if (!s) return;
+    applyScale(s.scale);
+    cur = s;
+    document.body.classList.toggle("acrylic", !!s.glass);
+    document.body.classList.toggle("solid", !s.glass);
+    document.documentElement.style.setProperty("--accent", s.accent);
+    label.textContent = s.label;
+    if (s.pending > 0) { badge.style.display = "block"; badge.textContent = `下書き ${s.pending}`; }
+    else badge.style.display = "none";
+  } catch (e) { /* bridge 未準備 */ }
+}
+setInterval(poll, 66);
+
+/* ================= ボタン ================= */
+document.getElementById("btn-close").addEventListener("click", () =>
+  window.pywebview.api.close_clicked());
+document.getElementById("badge").addEventListener("click", () =>
+  window.pywebview.api.clear_pending());
+document.getElementById("btn-dash").addEventListener("click", () =>
+  window.pywebview.api.open_dashboard());
+document.getElementById("btn-hist").addEventListener("click", async () => {
+  const panel = document.getElementById("panel");
+  const open = panel.style.display !== "flex";
+  panel.style.display = open ? "flex" : "none";
+  document.body.classList.toggle("expanded", open);
+  await window.pywebview.api.set_expanded(open);
+  if (open) renderHistory();
+});
+
+async function renderHistory() {
+  const items = await window.pywebview.api.history();
+  const el = document.getElementById("hist");
+  if (!items.length) { el.innerHTML = '<div class="empty">まだ認識ログはないよ</div>'; return; }
+  el.innerHTML = items.slice().reverse().map(([ts, mode, body]) => `
+    <div class="item" title="クリックでコピー">
+      <div class="meta"><span>${ts}</span>
+        <span class="${mode.includes("文字") ? "mode-dict" : "mode-talk"}">[${mode}]</span></div>
+      <div class="body">${body.replace(/</g, "&lt;")}</div>
+    </div>`).join("");
+  el.querySelectorAll(".item").forEach((it, i) => it.addEventListener("click", () =>
+    window.pywebview.api.copy_text(items[items.length - 1 - i][2])));
+}
+setInterval(() => {
+  if (document.getElementById("panel").style.display === "flex") renderHistory();
+}, 1200);
+</script>
+</body>
+</html>

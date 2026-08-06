@@ -1,0 +1,61 @@
+# ルーカス音声常駐AI 設定
+# 変更したら lucas_voice.py を再起動すること
+
+[stt]
+# 実測(2026-07-12, 171秒音声): large-v3-turbo=RTF0.44・一致率95% / kotoba=RTF0.65・81%
+# → turbo が速さも精度も勝ち。kotoba は "kotoba" 指定で戻せる
+engine = "openvino"    # "openvino"(NPU・実測: 15秒→0.4s/精度95.1%維持) / "faster-whisper"(CPU・実績)
+device = "NPU"              # openvino時のデバイス: NPU / GPU / CPU / AUTO
+ov_model_dir = "C:\\Users\\mahim\\lucas-voice\\models\\whisper-large-v3-turbo-int8-ov"
+unload_idle_min = 15   # アイドルこの分数でSTTを解放しメモリ返却（約950MB）。復帰2〜4秒。0=常駐
+model = "large-v3-turbo"
+beam_size = 2          # turbo は beam2 で精度低下なし（実測 95.2%）。kotoba に戻すなら 5 推奨
+cpu_threads = 8        # 推論スレッド数（このPCは8コア。0=ライブラリ既定の4）
+
+[vad]
+threshold_floor = 0.005   # 発話検出のRMS下限（実測: 発話0.01〜0.03 / ノイズ0.0015）
+silence_sec = 1.5         # この秒数無音が続いたら発話終了
+max_utterance_sec = 20    # 1発話の最大長
+min_utterance_sec = 0.4   # これ未満の音は無視（物音対策）
+min_voiced_sec = 0.3      # 有声（閾値超え）の合計がこれ未満なら文字起こししない（誤発火のCPU浪費対策）
+speech_gate = true        # 人声ゲート（Silero VAD）: 人の声でない録音をwhisperに渡さず捨てる
+min_speech_ratio = 0.1    # 人声比率がこれ未満なら破棄（実測: 人声0.49 / 雑音0.00。ログのspeech=値で調整可）
+
+[wake]
+engine = "vosk"           # "vosk" = 軽量常時ウェイク（語尾から即発火・待機中はwhisper停止） / "whisper" = 旧方式
+words = ["ルーカス"]      # vosk用の厳格ウェイク語（トークン完全一致）。緩い変種を足すと誤発火する（実測）
+model_dir = "C:\\Users\\mahim\\lucas-voice\\models\\vosk-model-small-ja-0.22"
+
+[words]
+wake = ["ルーカス", "るーかす", "ルーカ", "ルカス"]
+farewell = ["フィニッシュ", "finish", "バイバイ", "ばいばい", "グッジョブ", "グットジョブ", "good job", "goodjob", "お疲れ様", "おつかれ"]
+send = ["これでOK", "これでオッケー", "これでオーケー", "送信して", "送信", "送って"]
+cancel = ["キャンセル", "下書き消して", "取り消し", "クリア"]
+# farewell/send/cancel は発話全体が短い（15文字未満）ときだけ有効——会話中の偶然の一致で誤作動しない
+
+[cc]
+window_title = "Lucas-CC"
+boot_wait_sec = 25        # CC起動からテキスト送信可能までの待ち
+workdir = "C:\\Users\\mahim\\lucas-voice"   # CCセッションのワークスペース
+
+[ui]
+enabled = true            # 最前面ステータスバー（false でバーなし運用）
+engine = "glass"          # "glass" = リキッド/グラスUI（WebView2） / "classic" = 旧tkバー
+fluid_color = "#0b0d14"   # 旧磁性流体の色（バックアップ bar_ferrofluid_backup.html 用に残置）
+eye_skin = "skyblue"      # レンズアイのスキン: skyblue(スカイブルー) / unicorn(ドリーミー虹) / hal(2001年宇宙の旅) / aurora(ティール×紫)
+pupil_color = "#4fa8f5"   # 瞳孔の色（白→この色のグラデ発光核）: 青#4fa8f5 / 赤#ff4d4d / 金#ffc24d / 紫#b78aff / 翠#4de0b8
+
+[tts]
+engine = "voicevox"       # "voicevox" = リッチ男声（ローカル・要エンジン） / "sapi" = 旧Haruka（確実）
+fx = "jarvis"             # "jarvis" = 深み+AI感の加工(2026-07-15まひろ承認) / "none" = 素の青山龍星
+style = 13                # VOICEVOXスタイルID（青山龍星ノーマル=13。サンプル聴き比べで変更可）
+speed = 1.0               # 話速（1.0=標準。1.1〜1.2で少しキビキビ。fx時は内部で更にtempo補正）
+url = "http://127.0.0.1:50021"
+engine_dir = "C:\\Users\\mahim\\lucas-voice\\voicevox_engine"   # run.exe の場所（自動起動用）
+
+[dictation]
+enabled = true            # push-to-talk 文字起こしモード（カーソル位置に貼り付け＋クリップボード保持）
+hold_keys = "ctrl+alt"    # このキーを押している間だけ録音、離すと確定（ctrl/alt/shift の組合せ）
+                          # 録音中のクリック・他キーでは止まらない。止めるのは離す/バーの×/上限のみ
+max_recording_sec = 180   # 録音上限（残り20秒からバーにカウントダウン→到達で自動確定）
+chunk_sec = 20            # 録音しながら裏で認識するチャンク長（無音の切れ目で分割）
