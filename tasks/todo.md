@@ -242,6 +242,18 @@
 - [x] **事故と修復**: config.toml を PowerShell `Set-Content -Encoding utf8` で書いて **BOM混入 → tomllib パース不能**（バーが既定色へフォールバックし「虹にならない」で発覚）。BOM除去して修復。以後 config 書き換えは Python で BOMなし＋書いた直後にパース検証する専用スクリプトに統一（教訓 LL-100）
 - [ ] ★まひろ確認: にじみが消えたか・コア球の大きさと声への反応・好みの色（ダッシュボードで即変更可）
 
+## バーv5＝ガラスを skill 準拠＋実光学へ／GitHub 管理開始（2026-08-06 まひろ指示・本番反映 14:2x）
+リポジトリ: https://github.com/menma22/lucas-voice （**private**）。models/ voicevox_engine/ .venv/ logs/ voice_samples/ は .gitignore で除外（再取得可能・計約5.7GB）。改行は .gitattributes で LF 固定（既定 autocrlf=true だとコミット直後から常に modified に見えた）。
+- [x] **屈折を実光学に置換**（まひろ指摘「自分たちの適当な値でやるな。歪みすぎ・変に反転している」）: 出典 kube.io "Liquid Glass in the Browser"。squircle 凸ベベルの断面 → 法線 → スネルの法則(n=1.5) → 厚み14pxぶんの横ずれ。ノブは **ベベル幅13px / 厚み14px / 屈折率1.5** の物理量のみ（旧: 距離場の2.4乗＋目分量 scale=130）
+- [x] **参照方向を外向きへ**: 旧版は内向きに折り込んでいたため背景が反転・混合して見えていた。実物のガラス同様、縁は外側の景色を寄せて見せる。最外周2.5pxは変位を0へ戻す（窓の外の画素はサンプラが持っていないため）
+- [x] **中心は変位ゼロ＝背景が1:1で素通し**（まひろ指示「ほぼクリア／後ろに透けてるやつはだいたいそのまま」）。地色 alpha .07・ぼかし無し
+- [x] 背後画像を**窓全体に1:1**で敷き直し（旧: タイル内に object-fit:cover で押し込み＝パネル展開時にズレていた）
+- [x] skill（emilkowalski/skills: apple-design §12 / emil-design-eng）準拠: 光を受ける明るい上縁・ラベルのヴァイブランシー（weight500/字間+.04em/密着影＋広い薄影）・バッジは不透明面に色・パネルは厚いマテリアル(blur16px)・開閉は materialize(開220ms/閉150ms)・`transition: all` 廃止＋自前イージング・`:active` 押し込み・ホバーは (hover:hover) で囲う・reduced-motion / -transparency / contrast 対応
+- [x] 撤去: R/Bプリズムゴースト・手描きスペキュラ膜・ノイズ層・未使用の goo フィルタ
+- [x] 検証: 同一背景（固定パターン）を敷いた実機キャプチャで改修前後を比較（LL-008: 可視性・見た目は画面合成結果で測る）。node --check 通過
+- [ ] **既知の不具合（今回の変更とは無関係・要修正）**: 履歴パネルが開かない。JS を経由せず `set_expanded(true)` を直叩きしても窓が伸びず `innerHeight` は 116 のまま＝Python 側の展開処理の問題
+- [ ] ★まひろ確認: 実機で歪みの量が好みか（強くするなら initLens の THICK、帯を広げるなら BEZEL）
+
 ## Step 4 — 常駐化＆使い勝手
 - [ ] ★まひろE2E（新ビルド・再）: ヘッドレス起動（バーは出ない）→「ルーカス」→バー出現→CC起動（lucas-voiceで開くか）→発話→「これでOK」送信→**CCが毎ターン喋るか**→「バイバイ」→バー消滅
 - [ ] スタートアップ登録（E2E合格後）
