@@ -63,16 +63,40 @@ GAP = 4                  # タスクバーとの隙間（論理）
 MARGIN_R = 10            # 画面右端からの余白（論理）
 CORNER_CSS = 32          # 角丸の直径（CSS px = 論理）。bar.html の --radius(16px) と一致
 
-_user32 = ctypes.windll.user32
-_gdi32 = ctypes.windll.gdi32
+# ⚠ `ctypes.windll.user32` は**プロセス共有のキャッシュ実体**。ここで argtypes を宣言すると
+# pywebview 自身の呼び出し（winforms.py の move → SetWindowPos）まで型が変わり
+# `ctypes.ArgumentError: argument 5: TypeError: wrong type` で落ちる（2026-08-06 実測）。
+# 自分専用のインスタンスを持つこと。use_last_error は GetLastError を安全に読むため。
+_user32 = ctypes.WinDLL("user32", use_last_error=True)
+_gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
 
-# ⚠ 64bit HWND の切り捨て防止: z-order 走査系は argtypes/restype を明示する
+# ⚠ 64bit HWND の切り捨て防止: **ハンドルを受け渡す API は全て** argtypes/restype を明示する。
 # （既定の c_int だと 2^31 超のハンドルが壊れ、_obscured_by_above が沈黙する。実測）
+#
+# 2026-08-06 実測で判明した重大な取りこぼし: SetWindowPos に argtypes が無く、
+# hWndInsertAfter に渡す HWND_TOPMOST(-1) / HWND_NOTOPMOST(-2) が 64bit ハンドルとして
+# 正しく渡らないため、**位置・サイズを伴う SetWindowPos が常に失敗（戻り値0）していた**。
+#   実測ログ: SetWindowPos(h, -1, 1794,700,116,424, 16) -> 0（失敗）
+#             SetWindowPos(h,  0, 0,0,0,0, 55)          -> 1（成功。hWndInsertAfter=0）
+# 症状: ① 履歴パネルを開いても窓が伸びない（＝パネルが高さ0に潰れて何も出ない）
+#       ② `_raise_topmost` の NOTOPMOST→TOPMOST トグルが効かず最前面の再主張が無言で不発
+# バーが正しい位置に出ていたのは create_window の初期座標のおかげで、
+# 監視ループの配置は一度も効いていなかった。
 _user32.GetWindow.restype = wintypes.HWND
 _user32.GetWindow.argtypes = [wintypes.HWND, ctypes.c_uint]
 _user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 _user32.IsWindowVisible.restype = wintypes.BOOL
 _user32.IsWindowVisible.argtypes = [wintypes.HWND]
+_user32.SetWindowPos.restype = wintypes.BOOL
+_user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                 ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+_user32.ShowWindow.restype = wintypes.BOOL
+_user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+_user32.SetWindowRgn.argtypes = [wintypes.HWND, wintypes.HRGN, wintypes.BOOL]
+_user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
+_user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, wintypes.DWORD]
+_user32.RedrawWindow.argtypes = [wintypes.HWND, ctypes.c_void_p, wintypes.HRGN, ctypes.c_uint]
+_gdi32.CreateRoundRectRgn.restype = wintypes.HRGN   # HRGN はポインタ幅。c_int だと壊れる
 
 SWP_NOACTIVATE = 0x0010
 SWP_NOSIZE = 0x0001
@@ -103,14 +127,37 @@ def _work_area() -> tuple[int, int, int, int]:
     return r.left, r.top, r.right, r.bottom
 
 
-def _geometry(expanded: bool) -> tuple[int, int, int, int, int]:
-    """バー窓の論理矩形。プライマリ作業領域の**右下**（タスクバー直上）・必ず画面内。
-    返り値: (x, y, width, total_height, bar_height)。"""
+def _geometry(expanded: bool, scale: float = 1.0) -> tuple[int, int, int, int, int]:
+    """バー窓の矩形。プライマリ作業領域の**右下**（タスクバー直上）・必ず画面内。
+    返り値: (x, y, width, total_height, bar_height)。
+
+    scale=1.0（既定）は create_window に渡す**論理px**——pywebview/WinForms が
+    これを DPI 倍率で拡大して着地させる（この経路は実測で確立済み・触らない）。
+    scale に実測倍率を渡すと**物理px**を返す。SetWindowPos は物理px で動くので、
+    監視ループからの再配置はこちらを使う（論理値のまま渡すと、幅は窓の最小サイズ
+    174px に切り上げられる一方で x は 116px 幅前提のまま＝右へ約60px はみ出す）。
+    """
     wl, wt, wr, wb = _work_area()
-    total_h = BAR_H + (PANEL_H if expanded else 0)
-    x = max(wl, wr - BAR_W - MARGIN_R)
-    y = max(wt, wb - total_h - GAP)
-    return x, y, BAR_W, total_h, BAR_H
+    bar_h = round(BAR_H * scale)
+    total_h = bar_h + (round(PANEL_H * scale) if expanded else 0)
+    w = round(BAR_W * scale)
+    x = max(wl, wr - w - round(MARGIN_R * scale))
+    y = max(wt, wb - total_h - round(GAP * scale))
+    return x, y, w, total_h, bar_h
+
+
+def _measure_scale(hwnd: int) -> float:
+    """実窓の幅から DPI 倍率を実測する（pywebview が作った時点の大きさ＝正解）。
+
+    自分で DPI 認識を設定せず、pywebview の着地結果を測って合わせる方針
+    （モジュール冒頭の DPI設計を参照）。異常値は 1.0 に丸めて安全側へ倒す。"""
+    r = wintypes.RECT()
+    _user32.GetWindowRect(hwnd, ctypes.byref(r))
+    w = r.right - r.left
+    if w <= 0:
+        return 1.0
+    s = w / BAR_W
+    return s if 0.5 <= s <= 4.0 else 1.0
 
 
 def _apply_pill_region(hwnd: int, corner_css: int = CORNER_CSS) -> None:
@@ -450,11 +497,14 @@ def run_glass_bar(state: UIState) -> None:
             _log("FATAL: hwnd を取得できず、バーを配置できない")
             return
         api._hwnd = hwnd
+        # DPI倍率は「pywebview が着地させた実窓の幅」から実測する。以降の SetWindowPos は
+        # この倍率で物理pxに直して渡す（隠す前に測ること——非表示でも矩形は生きている）
+        scale = _measure_scale(hwnd)
         _apply_noactivate(hwnd)
         threading.Thread(target=_backdrop_sampler, args=(window, api, hwnd),
                          daemon=True).start()
         _hide(hwnd)  # 起動直後は隠して待機（待機中は出さない）
-        _log(f"hwnd={hwnd} 取得・初期化完了 glass=DIYサンプラ起動")
+        _log(f"hwnd={hwnd} 取得・初期化完了 dpi_scale={scale:.3f} glass=DIYサンプラ起動")
 
         shown: bool | None = None
         expanded_applied: bool | None = None
@@ -464,7 +514,7 @@ def run_glass_bar(state: UIState) -> None:
             d = compute_draw(state, api.closed)
             want = d["show"] or api.expanded
             api._sampling = bool(want)  # 表示中だけ背後サンプラを回す
-            x, y, w, h, bar_h = _geometry(api.expanded)
+            x, y, w, h, bar_h = _geometry(api.expanded, scale)
             try:
                 if want:
                     _user32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE)
