@@ -65,8 +65,8 @@ workdir = "{cc_workdir}"        # CCセッションのワークスペース
 enabled = {ui_enabled}          # 最前面ステータスバー（false でバーなし運用）
 engine = "{ui_engine}"          # "glass" = リキッド/グラスUI（WebView2） / "classic" = 旧tkバー
 fluid_color = "{ui_fluid}"      # 旧磁性流体の色（バックアップ用に残置）
-eye_skin = "{ui_eye}"           # レンズアイのスキン: skyblue / unicorn / hal / aurora
-pupil_color = "{ui_pupil}"      # 瞳孔の色（白→この色のグラデ核）: 青#4fa8f5 / 赤#ff4d4d / 金#ffc24d / 紫#b78aff
+# レンズアイで色を持つのは中心のコア球だけ（旧 eye_skin は 2026-07-19 廃止・ここへ一本化）
+pupil_color = "{ui_pupil}"      # 16進色 or "rainbow"。青#4fa8f5 / 赤#ff4d4d(HAL) / 金#ffc24d / 紫#b78aff / 翠#4de0b8
 
 [tts]
 engine = "{tts_engine}"         # "voicevox" = リッチ男声（ローカル） / "sapi" = 旧Haruka（確実）
@@ -121,7 +121,6 @@ def write_config(cfg: dict) -> None:
         cc_workdir=cfg["cc"]["workdir"].replace("\\", "\\\\"),
         ui_enabled=_toml_bool(cfg["ui"]["enabled"]), ui_engine=cfg["ui"]["engine"],
         ui_fluid=cfg["ui"].get("fluid_color", "#0b0d14"),
-        ui_eye=cfg["ui"].get("eye_skin", "skyblue"),
         ui_pupil=cfg["ui"].get("pupil_color", "#4fa8f5"),
         tts_engine=cfg["tts"]["engine"], tts_fx=cfg["tts"].get("fx", "jarvis"),
         tts_style=cfg["tts"]["style"],

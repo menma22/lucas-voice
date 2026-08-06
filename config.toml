@@ -42,8 +42,9 @@ workdir = "C:\\Users\\mahim\\lucas-voice"   # CCセッションのワークス�
 enabled = true            # 最前面ステータスバー（false でバーなし運用）
 engine = "glass"          # "glass" = リキッド/グラスUI（WebView2） / "classic" = 旧tkバー
 fluid_color = "#0b0d14"   # 旧磁性流体の色（バックアップ bar_ferrofluid_backup.html 用に残置）
-eye_skin = "skyblue"      # レンズアイのスキン: skyblue(スカイブルー) / unicorn(ドリーミー虹) / hal(2001年宇宙の旅) / aurora(ティール×紫)
-pupil_color = "#4fa8f5"   # 瞳孔の色（白→この色のグラデ発光核）: 青#4fa8f5 / 赤#ff4d4d / 金#ffc24d / 紫#b78aff / 翠#4de0b8
+# レンズアイで色を持つのは中心のコア球だけ（旧 eye_skin は 2026-07-19 廃止・ここへ一本化）
+# ダッシュボードの「設定 → レンズアイ」から変更可。16進色 または "rainbow"
+pupil_color = "#4fa8f5"   # 青#4fa8f5 / 赤#ff4d4d(HAL) / 金#ffc24d / 紫#b78aff / 翠#4de0b8 / 白#e8f2ff / "rainbow"
 
 [tts]
 engine = "voicevox"       # "voicevox" = リッチ男声（ローカル・要エンジン） / "sapi" = 旧Haruka（確実）

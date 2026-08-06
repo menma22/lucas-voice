@@ -24,3 +24,6 @@ desktop.ini
 .DS_Store
 .idea/
 .vscode/
+
+# git worktree（.claude/worktrees/）はリポジトリ内に置くが追跡しない
+.claude/

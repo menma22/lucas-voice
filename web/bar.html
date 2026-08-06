@@ -226,12 +226,14 @@
    - 待機/対話: 機械シャッターの瞬き（ランダム間隔・たまに二度瞬き）
    - 認識/処理中: 光彩内をスキャンアークが周回
    - 発話中: 拍でやわらかく明滅
-   - スキンは config [ui] eye_skin: skyblue / unicorn / hal / aurora（poll の cur.eye）
    まひろ指定（2026-07-19）:
    - 縁＝**カメラレンズのベゼル**をちゃんと作る（マシンドメタル環＋ローレット刻み＋
      溝＋内向き斜面＋口金リングの多段構造）
-   - 瞳孔＝黒でなく**白→色のグラデ発光核**。色は config [ui] pupil_color（poll の cur.pupil。
-     既定は青#4fa8f5→白。赤などに設定画面から変更可）
+   - **色を持つのは中心のAIコア球だけ**（「その周りににじんで青が出てるのは消して・
+     中心の玉だけ色がついてる感じに」）。旧・光彩の色面と広域ブルームは撤去し、
+     レンズ内部は無彩色の素子（白い細線のみ）に。旧 eye_skin は pupil_color へ一本化。
+   - コア球の色は config [ui] pupil_color（poll の cur.pupil）＝**ダッシュボードから変更可**。
+     16進色（既定 青#4fa8f5）または "rainbow"（ユニコーン虹コア）
    大きさ: レンズ外径 = R0 = タイル幅の31% → 直径がタイルの約6割 */
 const cv = document.getElementById("orb");
 const ctx = cv.getContext("2d");
@@ -266,8 +268,8 @@ const CORE_MIN = 0.17, CORE_MAX = 0.17;  /* コア球半径 = RL×(MIN + MAX×lv
 const CORE_GLOW = 1.45;   /* コア球の接触グロー半径（×Rp）。上げるほど周囲へにじむ */
 
 /* 虹コア（pupil_color = "rainbow"）: まひろが気に入っていたユニコーン虹をコア球に継承 */
-const RAINBOW = [[0, "#ffd6ee"], [0.2, "#e7d6ff"], [0.4, "#cfe6ff"],
-                 [0.6, "#d4fff1"], [0.8, "#fff2d6"], [1, "#ffd6ee"]];
+const RAINBOW = [[0, "#ffb0dc"], [0.2, "#d3aaff"], [0.4, "#a8d4ff"],
+                 [0.6, "#9df3d8"], [0.8, "#ffe1a8"], [1, "#ffb0dc"]];
 
 /* コア球パレット: config [ui] pupil_color の1色から「白コア→色→深色」のグラデを導出。
    色が変わったときだけ再計算（毎フレームのパースを避ける） */
@@ -489,9 +491,9 @@ function drawOrb(now, dt) {
       ctx.fillStyle = cg;
       circle(ctx, CX, CY, Rp);
       const core = ctx.createRadialGradient(CX - Rp * 0.24, CY - Rp * 0.28, 0, CX, CY, Rp);
-      core.addColorStop(0, "rgba(255,255,255,.90)");
-      core.addColorStop(0.42, "rgba(255,255,255,.14)");
-      core.addColorStop(1, "rgba(70,50,105,.50)");
+      core.addColorStop(0, "rgba(255,255,255,.80)");
+      core.addColorStop(0.38, "rgba(255,255,255,.06)");
+      core.addColorStop(1, "rgba(70,50,105,.52)");
       ctx.fillStyle = core;
       circle(ctx, CX, CY, Rp);
     } else {

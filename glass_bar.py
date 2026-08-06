@@ -352,8 +352,9 @@ class BarApi:
         self._glass = True   # DIYグラス（背後サンプラ）が生きているか。死んだら solid 描画
         self._sampling = False  # バー表示中のみ True（monitor が更新・サンプラが従う）
         self._fluid = "#0b0d14"  # 旧磁性流体の色（config [ui] fluid_color。互換のため残置）
-        self._eye = "skyblue"    # レンズアイのスキン（config [ui] eye_skin）
-        self._pupil = "#4fa8f5"  # 瞳孔の色（config [ui] pupil_color。白へのグラデ発光核）
+        # レンズアイで色を持つのは中心のコア球だけ（config [ui] pupil_color）。
+        # 16進色 or "rainbow"。旧 eye_skin（光彩のスキン）は 2026-07-19 に廃止・ここへ一本化
+        self._pupil = "#4fa8f5"
 
     # --- JS から ---
     def get_scale(self) -> float:
@@ -364,7 +365,6 @@ class BarApi:
         d["scale"] = self._scale
         d["glass"] = self._glass
         d["fluid"] = self._fluid
-        d["eye"] = self._eye
         d["pupil"] = self._pupil
         return d
 
@@ -421,12 +421,11 @@ def run_glass_bar(state: UIState) -> None:
     _log(f"=== start === logical rect=({x0},{y0},{w0}x{h0})")
 
     api = BarApi(state)
-    try:  # 見た目設定（config [ui]）: eye_skin=スキン / pupil_color=瞳孔 / fluid_color=旧磁性流体（互換）
+    try:  # 見た目設定（config [ui]）: pupil_color=コア球の色 / fluid_color=旧磁性流体（互換）
         import tomllib
         with open(BASE / "config.toml", "rb") as f:
             _ui = tomllib.load(f).get("ui", {})
         api._fluid = str(_ui.get("fluid_color", api._fluid))
-        api._eye = str(_ui.get("eye_skin", api._eye))
         api._pupil = str(_ui.get("pupil_color", api._pupil))
     except Exception as e:
         _log(f"config読込(ui)失敗→既定値: {e!r}")

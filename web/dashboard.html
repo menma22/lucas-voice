@@ -160,6 +160,21 @@
                      border-radius: 50%; background: #cbd5f5; transition: all .2s; }
   .switch input:checked + i { background: color-mix(in srgb, var(--accent) 45%, transparent); }
   .switch input:checked + i::after { left: 20px; background: #fff; }
+  /* レンズアイのコア色ピッカー（プレビューはCSSグラデだけで作る＝崩れない） */
+  #eye-preview { width: 84px; height: 84px; border-radius: 50%; flex: 0 0 auto;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(circle at 36% 30%, #131a29, #06090f 68%, #04060b);
+    border: 3px solid #2b3342;
+    box-shadow: inset 0 2px 7px rgba(0,0,0,.85), 0 5px 16px rgba(0,0,0,.5); }
+  #eye-core { width: 36%; height: 36%; border-radius: 50%; transition: all .2s ease; }
+  #eye-sw { display: flex; flex-wrap: wrap; gap: 9px; }
+  .sw { width: 26px; height: 26px; border-radius: 50%; cursor: pointer;
+        border: 2px solid transparent; outline: 1px solid rgba(255,255,255,.2);
+        outline-offset: -3px; transition: transform .15s, border-color .15s; }
+  .sw:hover { transform: scale(1.14); }
+  .sw.on { border-color: #fff; }
+  #c-pupil-pick { width: 34px; height: 30px; padding: 2px; cursor: pointer;
+    background: rgba(0,0,0,.28); border: 1px solid var(--edge); border-radius: 9px; }
   #save-row { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
   #save-msg { font-size: 11.5px; color: var(--teal); opacity: 0; transition: opacity .3s; }
 
@@ -266,6 +281,24 @@
           <div class="field"><label>キャンセルワード</label><textarea id="c-cancel"></textarea></div>
           <div class="field"><label>終了ワード</label><textarea id="c-farewell"></textarea></div>
           <div class="hint">カンマ区切り。短い発話（15文字未満）のときだけ発動する。</div>
+        </div>
+        <div class="card">
+          <h2>レンズアイ（バーの目）</h2>
+          <div class="field">
+            <label>コアの色<small>色がつくのは中心の球だけ</small></label>
+            <div style="display:flex; align-items:center; gap:18px; flex:1">
+              <div id="eye-preview"><div id="eye-core"></div></div>
+              <div style="flex:1; display:flex; flex-direction:column; gap:11px">
+                <div id="eye-sw"></div>
+                <div style="display:flex; align-items:center; gap:9px">
+                  <input type="color" id="c-pupil-pick" title="自由な色を選ぶ">
+                  <input type="text" id="c-pupil" spellcheck="false" style="max-width:150px">
+                  <span style="font-size:10.5px; color:var(--text-faint)">16進 または rainbow</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="hint">「保存して再起動」でバーに反映される。</div>
         </div>
         <div class="card">
           <h2>VOICE DETECTION</h2>
@@ -412,7 +445,50 @@ async function loadConfig(){
   set("c-cancel", c.words.cancel.join(", ")); set("c-farewell", c.words.farewell.join(", "));
   set("c-floor", c.vad.threshold_floor); set("c-silence", c.vad.silence_sec);
   set("c-engine", c.ui.engine || "glass");
+  setPupil(c.ui.pupil_color || "#4fa8f5");
 }
+
+/* ===== レンズアイのコア色（バーの目で唯一色を持つ球） ===== */
+const EYE_PRESETS = [["#4fa8f5","青"], ["#ff4d4d","赤 (HAL)"], ["#ffc24d","金"],
+                     ["#b78aff","紫"], ["#4de0b8","翠"], ["#e8f2ff","白"], ["rainbow","虹"]];
+const RAINBOW_CSS = "conic-gradient(#ffb0dc,#d3aaff,#a8d4ff,#9df3d8,#ffe1a8,#ffb0dc)";
+const isRainbow = v => v === "rainbow" || v === "unicorn";
+function swatchBg(v){ return isRainbow(v) ? RAINBOW_CSS : v; }
+/* バー側 drawOrb と同じ導出（白コア→色→深色）を CSS グラデで再現＝実物と同じ見え方 */
+function paintCore(v){
+  const core = document.getElementById("eye-core");
+  if (isRainbow(v)) {
+    core.style.background =
+      "radial-gradient(circle at 33% 28%, rgba(255,255,255,.8), rgba(255,255,255,.06) 38%," +
+      " rgba(70,50,105,.52) 100%), " + RAINBOW_CSS;
+    core.style.boxShadow = "0 0 13px 3px rgba(232,206,255,.45)";
+    return;
+  }
+  const c = hx(/^#[0-9a-fA-F]{6}$/.test(v) ? v : "#4fa8f5");
+  const mix = (t,k) => `rgb(${c.map((x,i)=>Math.round(x+(t[i]-x)*k)).join(",")})`;
+  const mid = mix([255,255,255], .55), deep = mix([3,5,12], .52);
+  core.style.background = `radial-gradient(circle at 33% 28%, #fff, ${mid} 32%,`
+    + ` rgb(${c.join(",")}) 76%, ${deep} 100%)`;
+  core.style.boxShadow = `0 0 13px 3px rgba(${c.join(",")},.42)`;
+}
+function setPupil(v){
+  v = String(v || "").trim();
+  document.getElementById("c-pupil").value = v;
+  /* カラーピッカーは16進しか持てない。rainbow のときは代表色を入れて黒く潰れないように */
+  document.getElementById("c-pupil-pick").value =
+    /^#[0-9a-fA-F]{6}$/.test(v) ? v : (isRainbow(v) ? "#e7d6ff" : "#4fa8f5");
+  document.querySelectorAll("#eye-sw .sw").forEach(s =>
+    s.classList.toggle("on", s.dataset.v.toLowerCase() === v.toLowerCase()));
+  paintCore(v);
+}
+(function initEyeSwatches(){
+  const box = document.getElementById("eye-sw");
+  box.innerHTML = EYE_PRESETS.map(([v,n]) =>
+    `<div class="sw" data-v="${v}" title="${n}" style="background:${swatchBg(v)}"></div>`).join("");
+  box.querySelectorAll(".sw").forEach(s => s.onclick = () => setPupil(s.dataset.v));
+  document.getElementById("c-pupil-pick").oninput = e => setPupil(e.target.value);
+  document.getElementById("c-pupil").oninput = e => setPupil(e.target.value);
+})();
 function set(id, v){ document.getElementById(id).value = v; }
 function collect(){
   const csv = id => document.getElementById(id).value.split(",").map(s=>s.trim()).filter(Boolean);
@@ -422,7 +498,7 @@ function collect(){
       hold_keys: val("c-hold"), max_recording_sec: +val("c-maxrec"), chunk_sec: +val("c-chunk") },
     words: { wake: csv("c-wake"), send: csv("c-send"), cancel: csv("c-cancel"), farewell: csv("c-farewell") },
     vad: { threshold_floor: +val("c-floor"), silence_sec: +val("c-silence") },
-    ui: { engine: val("c-engine") },
+    ui: { engine: val("c-engine"), pupil_color: val("c-pupil").trim() || "#4fa8f5" },
   };
 }
 function val(id){ return document.getElementById(id).value; }

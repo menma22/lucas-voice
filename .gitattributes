@@ -1,0 +1,7 @@
+# 改行コードはリポジトリ内 LF に統一し、チェックアウトでも LF のまま出す。
+# （既定の core.autocrlf=true だと作業ツリー(LF)と git の想定(CRLF)がズレ、
+#   コミット直後から常に 5 ファイルが modified に見える状態になっていた）
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.wav binary
