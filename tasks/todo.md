@@ -251,7 +251,10 @@
 - [x] skill（emilkowalski/skills: apple-design §12 / emil-design-eng）準拠: 光を受ける明るい上縁・ラベルのヴァイブランシー（weight500/字間+.04em/密着影＋広い薄影）・バッジは不透明面に色・パネルは厚いマテリアル(blur16px)・開閉は materialize(開220ms/閉150ms)・`transition: all` 廃止＋自前イージング・`:active` 押し込み・ホバーは (hover:hover) で囲う・reduced-motion / -transparency / contrast 対応
 - [x] 撤去: R/Bプリズムゴースト・手描きスペキュラ膜・ノイズ層・未使用の goo フィルタ
 - [x] 検証: 同一背景（固定パターン）を敷いた実機キャプチャで改修前後を比較（LL-008: 可視性・見た目は画面合成結果で測る）。node --check 通過
-- [ ] **既知の不具合（今回の変更とは無関係・要修正）**: 履歴パネルが開かない。JS を経由せず `set_expanded(true)` を直叩きしても窓が伸びず `innerHeight` は 116 のまま＝Python 側の展開処理の問題
+- [x] **履歴パネルが開かない不具合を修正**（まひろ指示で継続対応）: 真因は `_user32` に `SetWindowPos` の argtypes が無く、`hWndInsertAfter` に渡す `HWND_TOPMOST(-1)` が 64bit ハンドルとして渡らないため **位置・サイズを伴う SetWindowPos が常に戻り値0（失敗）** だったこと。実測 `SetWindowPos(h,-1,1794,700,116,424,16) -> 0` / `SetWindowPos(h,0,0,0,0,0,55) -> 1`。影響は①パネルが高さ0に潰れて何も出ない ②`_raise_topmost` の最前面再主張が無言で不発——**バーの位置が正しかったのは create_window の初期座標のおかげで、監視ループの配置は一度も効いていなかった**
+  - ハンドルを渡す API 全てに argtypes/restype を宣言。⚠ `ctypes.windll.user32` はプロセス共有の実体で、そこに宣言すると pywebview 自身の SetWindowPos まで `ArgumentError` で落ちる（実測）→ 自分専用の `ctypes.WinDLL` へ分離（教訓 LL-101）
+  - SetWindowPos が効くようになると論理px指定では窓が右にはみ出すため、実窓の幅から DPI 倍率を実測（`_measure_scale`）して物理pxで配置。create_window へ渡す初期値は従来どおり論理px（実測で確立した経路なので不変）
+  - 検証: パネル展開で innerHeight 118→429・パネル高さ308px・履歴3件描画。ログで初めて `set==actual`（`SHOW set=(1729,946,176x176) actual=(1729,946,176x176)`）。閉じた状態に退行なし・stderr 0バイト
 - [ ] ★まひろ確認: 実機で歪みの量が好みか（強くするなら initLens の THICK、帯を広げるなら BEZEL）
 
 ## Step 4 — 常駐化＆使い勝手
