@@ -4,43 +4,103 @@
 <meta charset="utf-8">
 <title>Lucas Bar</title>
 <style>
+  /* ==========================================================================
+     リキッドグラス v4（2026-08-06 全面書き直し・まひろ指示「完全に skill に従って」）
+     設計の出典: emilkowalski/skills の apple-design（§12 Materials & depth ほか）と
+     emil-design-eng（イージング・持続時間・パフォーマンス規約）。
+     旧版（自前の feDisplacementMap 屈折＋R/Bプリズム＋手描きスペキュラ＋ノイズ）は
+     全撤去した。skill のマテリアルの定義は「背後をぼかした半透明レイヤー＋
+     光を受ける明るい上縁」であり、屈折レンズではないため。
+     ------------------------------------------------------------------------
+     ・材質は backdrop-filter: blur() + saturate()（skill の指定そのもの）。
+       背後画素は python の背後サンプラが敷く #backdrop（窓と1:1）。
+     ・暗いマテリアルを選ぶ = skill「darker/heavier materials separate structural
+       regions」。バーは任意のデスクトップの上に浮く構造物なので暗側が正しい。
+     ・大きい面ほど厚く: パネル(308px)は blur 22px、小さいタイル(116px)は 14px。
+     ・ぼかしは 20px 未満に保つ（emil: heavy blur is expensive）。
+     ========================================================================== */
   :root {
-    --glass-edge: rgba(255, 255, 255, 0.16);
-    --glass-sheen: rgba(255, 255, 255, 0.07);
     --text: #eaf0ff;
     --text-dim: #93a0c8;
     --accent: #565f89;
     --radius: 16px;   /* SetWindowRgn の角丸（CORNER_CSS=32 直径）と一致させること */
+
+    /* --- マテリアル（味の調整はここだけで済む） --- */
+    /* 透明度の方針（2026-08-06 まひろ指示）: バーは**ほぼクリア**。ぼかしで曇らせず、
+       ガラスらしさは「歪み（屈折）」が担う。skill のマテリアル定義のうち
+       “ぼかした半透明レイヤー” は、文字を載せるパネル側にだけ残す
+       （パネルは可読性が要る面なので薄く曇らせる＝skill の material weight の使い分け）。 */
+    --glass-tint: rgba(10, 13, 26, 0.07);    /* タイルの地色。ほぼ素通し */
+    --glass-sat: 1.12;                       /* 屈折後の彩度をわずかに上げる（ガラスの色乗り） */
+    /* 歪みの強さは CSS ではなく JS 側の物理パラメータ（ベベル幅・厚み・屈折率）で決まる。
+       initLens の BEZEL / THICK / IOR を触ること。 */
+    --glass-blur-panel: 14px;                /* パネルだけぼかす */
+    --glass-tint-panel: rgba(9, 12, 24, 0.34);
+    --edge-top: rgba(255, 255, 255, 0.40);   /* 光を受ける上縁（skill の bright top edge） */
+    --edge-bottom: rgba(255, 255, 255, 0.10);
+
+    /* --- イージング（emil: 組み込みイージングは弱すぎる。必ず自前カーブ） --- */
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
   }
   * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
   html, body { overflow: hidden; height: 100%; background: transparent; }
   body {
     display: flex; flex-direction: column; justify-content: flex-end;
-    font-family: "Yu Gothic UI", sans-serif;
+    /* skill §15: まずプラットフォームの標準フォント（字幅・トラッキング調整済み）を使う */
+    font-family: system-ui, "Yu Gothic UI", sans-serif;
     color: var(--text);
     -webkit-font-smoothing: antialiased;
   }
 
-  /* ===== 履歴パネル（タイルの上に展開） ===== */
+  /* 背後の実画素（python の背後サンプラが窓の矩形をそのまま送ってくる）。
+     窓全体に 1:1 で敷くので、タイルもパネルも同じ景色の上に乗る＝ズレない。
+     旧版はこれを #tile の中に置いて object-fit: cover していたため、
+     パネル展開時に背景が縦に潰れていた（v4 で解消）。 */
+  #backdrop { position: fixed; inset: 0; z-index: 0; display: none; }
+  body.acrylic #backdrop { display: block; }
+  #backdrop img { width: 100%; height: 100%; object-fit: fill; display: block; }
+
+  /* ===== 履歴パネル（タイルの上に展開）=====
+     大きい面なので厚いマテリアル（blur 22px）。skill:「Bigger surfaces should read as thicker」。
+     開閉は「materialize（ぼけ＋スケール＋不透明度を同時に動かす）」——単なるフェードにしない。 */
   #panel {
     display: none; height: 308px;
     border-radius: var(--radius) var(--radius) 0 0;
-    border: 1px solid var(--glass-edge); border-bottom: none;
-    flex-direction: column; overflow: hidden;
+    flex-direction: column; overflow: hidden; position: relative; z-index: 1;
+    opacity: 0; transform: scale(.97) translateY(6px); filter: blur(10px);
+    transform-origin: bottom center;   /* 出所＝下のタイルから立ち上がる */
+    transition: opacity 150ms var(--ease-out), transform 150ms var(--ease-out),
+                filter 150ms var(--ease-out);   /* 閉じは速く（emil: exit は enter より速く） */
   }
-  body.acrylic #panel { background: rgba(9, 12, 24, 0.66); }
-  body.solid  #panel { background: linear-gradient(180deg, #141a2e, #0b0e1c); }
+  body.expanded #panel {
+    opacity: 1; transform: none; filter: none;
+    transition-duration: 220ms;        /* 開きは 220ms（skill: ドロワーは 150〜250ms） */
+  }
+  body.acrylic #panel {
+    background: var(--glass-tint-panel);
+    -webkit-backdrop-filter: blur(var(--glass-blur-panel)) saturate(var(--glass-sat));
+            backdrop-filter: blur(var(--glass-blur-panel)) saturate(var(--glass-sat));
+    box-shadow: inset 0 1px 0 var(--edge-top);   /* 光を受ける上縁 */
+  }
+  body.solid  #panel { background: linear-gradient(180deg, #141a2e, #0b0e1c);
+                       box-shadow: inset 0 1px 0 var(--edge-top); }
   #panel header {
     padding: 10px 14px 8px; font-size: 9.5px; letter-spacing: .16em;
     color: var(--text-dim); font-family: "Cascadia Code", monospace;
-    border-bottom: 1px solid rgba(255,255,255,.06);
   }
-  #hist { flex: 1; overflow-y: auto; padding: 4px; }
+  /* skill:「Scroll edge effects, not hard dividers」——ヘッダ下の 1px 罫線をやめ、
+     リストが浮遊クロームに潜り込む上下端をマスクでフェードさせる */
+  #hist { flex: 1; overflow-y: auto; padding: 4px;
+    -webkit-mask-image: linear-gradient(180deg, transparent 0, #000 12px,
+                                        #000 calc(100% - 8px), transparent 100%);
+            mask-image: linear-gradient(180deg, transparent 0, #000 12px,
+                                        #000 calc(100% - 8px), transparent 100%);
+  }
   #hist::-webkit-scrollbar { width: 4px; }
   #hist::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 2px; }
   .item { padding: 6px 9px; border-radius: 9px; margin: 2px 3px; cursor: pointer;
-          transition: background .15s; }
-  .item:hover { background: rgba(255,255,255,.06); }
+          transition: background 150ms ease; }
   .item .meta { font-family: "Cascadia Code", monospace; font-size: 9px;
                 color: var(--text-dim); margin-bottom: 2px; display: flex; gap: 7px; }
   .item .meta .mode-dict { color: #5eead4; }
@@ -49,72 +109,48 @@
                 user-select: text; word-break: break-all; }
   .empty { text-align: center; color: var(--text-dim); font-size: 10.5px; padding: 34px 0; }
 
-  /* ===== 正方形リキッドグラス・タイル ===== */
+  /* ===== 正方形グラスタイル（本体）=====
+     小さく浮く操作面なので薄いマテリアル（blur 14px）。
+     上縁を明るく・下縁を弱く＝skill の「bright top edge = light catching the material」。
+     縁の線（border）は張らない。マテリアルの明暗そのものが境界を語る。 */
   #tile {
-    position: relative; flex: 0 0 auto;
+    position: relative; flex: 0 0 auto; z-index: 1;
     width: 100%; height: 116px;
     border-radius: var(--radius);
-    border: 1px solid var(--glass-edge);
     overflow: hidden;
   }
-  body.expanded #tile { border-radius: 0 0 var(--radius) var(--radius); border-top: 1px solid rgba(255,255,255,.07); }
-  /* 完全透明グラス（自前サンプラ稼働時）: 背後画像そのまま。膜も枠も線も無し——
-     境界はひずみそのものが語る（2026-07-16 まひろFB「縁はいらない」） */
-  body.acrylic #tile {
-    border-color: transparent;
+  body.expanded #tile { border-radius: 0 0 var(--radius) var(--radius); }
+  /* --- 厚いガラス板そのもの ---
+     #tilebd = タイルと同じ大きさの箱に、窓全体の背後画像を「窓の下端に合わせて」置いたもの。
+     こうするとタイルの下に実際にある景色と 1:1 で一致する（パネル展開時もズレない）。
+     その箱に屈折フィルタを掛けるので、歪みの分布（squircle 距離場）がタイルの形と一致する。
+     サンプリングは常に内向き＝箱の外を参照しないので、縁が破綻しない。 */
+  /* overflow は切らない: 屈折で「タイルの少し外」を参照するため、フィルタに渡す絵は
+     タイルより広いままにしておく必要がある（最終的な切り抜きは #tile の overflow が行う）。
+     画像は拡大しない＝**中心は背景が 1:1 でそのまま透ける**（まひろ指示）。 */
+  #tilebd { position: absolute; inset: 0; z-index: 0; display: none;
+            filter: url(#lens) saturate(var(--glass-sat)); }
+  body.acrylic #tilebd { display: block; }
+  #tilebd img { position: absolute; left: 0; bottom: 0; width: 100%; height: 100vh;
+                object-fit: fill; display: block; }
+  #tile::before {   /* ガラスの地色。ほぼ透明——濃くしたいときは --glass-tint の alpha を上げる */
+    content: ""; position: absolute; inset: 0; z-index: 1; pointer-events: none;
     background: transparent;
   }
-  body.acrylic #tile::after { box-shadow: none; }
-  /* 不透明フォールバック: 自前で夜色ガラスを描く */
+  body.acrylic #tile::before { background: var(--glass-tint); }
+  /* 不透明フォールバック（背後サンプラが死んだとき）: 同じ色味を自前で描く */
   body.solid #tile {
     background:
       radial-gradient(120% 90% at 50% -12%, rgba(255,255,255,.085), transparent 55%),
       radial-gradient(110% 110% at 50% 46%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 62%),
       radial-gradient(150% 130% at 18% 4%, #1b2340, #0c101f 58%, #090b15);
   }
-  /* --- 自前グラスの下地: python が送る「背後の実画像（ごく薄いぼかし）」＋レンズ屈折 ---
-     完全透明のクリアガラス（2026-07-16 まひろFB・Psアイコン参考）。
-     #bdimg=本体 / #bdR・#bdB=縁だけ屈折率を変えたR/Bゴースト（プリズムの色分散） */
-  #backdrop { position: absolute; inset: 0; z-index: 0; overflow: hidden;
-              border-radius: inherit; display: none; }
-  body.acrylic #backdrop { display: block; }
-  #backdrop img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
-                  transform: scale(1.12);   /* 厚ガラスの拡大率＝全面に膨らみが出る */
-                  filter: url(#lens) saturate(1.06); }
-  #backdrop img.ghost { mix-blend-mode: screen; opacity: .5; pointer-events: none;
-    -webkit-mask: radial-gradient(118% 118% at 50% 50%, transparent 45%, #000 80%);
-            mask: radial-gradient(118% 118% at 50% 50%, transparent 45%, #000 80%); }
-  #bdR { filter: url(#lensR) saturate(1.2); }
-  #bdB { filter: url(#lensB) saturate(1.2); }
-  /* あからさまにガラス（2026-07-17 まひろFB「テカり・グラスっぽく」）:
-     スペキュラを**流体より上**（z4）に重ねる＝流体がガラスの下に封入されて見える。
-     広い曲面反射＋鋭い斜めハイライト＋右下の返し光。暗い陰は使わない
-     （前版の下部黒ビネットが「黒い線のフチ」に見えた——光だけで立体を出す） */
-  #glassfilm { position: absolute; inset: 0; z-index: 4; pointer-events: none; display: none; }
-  body.acrylic #glassfilm { display: block;
-    background:
-      radial-gradient(150% 95% at 28% -22%, rgba(255,255,255,.27), rgba(255,255,255,.07) 45%, transparent 62%),
-      linear-gradient(118deg, transparent 28%, rgba(255,255,255,.20) 39%, rgba(255,255,255,.05) 48%, transparent 58%),
-      radial-gradient(120% 85% at 80% 112%, rgba(255,255,255,.11), transparent 55%);
-  }
-
-  #tile::before { /* 液体ガラスの斜めの光筋 */
-    content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 3;
-    background: linear-gradient(118deg, transparent 34%, rgba(255,255,255,.065) 47%, rgba(255,255,255,.02) 53%, transparent 66%);
-  }
-  #tile::after { /* 縁の光は極薄ヘアラインのみ——「枠」に見える内側の帯は張らない */
-    content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 3;
+  #tile::after {   /* 光を受ける縁。上が明るく下は弱い＝斜め上からの光の当たり方 */
+    content: ""; position: absolute; inset: 0; pointer-events: none; z-index: 5;
     border-radius: inherit;
-    box-shadow:
-      inset 0 1px 0 rgba(255,255,255,.30),
-      inset 0 -1px 0 rgba(255,255,255,.12);
+    box-shadow: inset 0 1px 0 var(--edge-top), inset 0 -1px 0 var(--edge-bottom);
   }
-  #noise { /* 微細ノイズ＝ガラスの材質感 */
-    position: absolute; inset: 0; pointer-events: none; opacity: .018; z-index: 3;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  }
-  /* ※虹彩リム(#rim)は v3.2 で撤去、下部スクリム帯も 2026-07-17 撤去（フチに見える）。
-     ラベルの可読性は強めの text-shadow が担う */
+  body.expanded #tile::after { box-shadow: inset 0 -1px 0 var(--edge-bottom); }
 
   #orb { position: absolute; inset: 0; width: 100%; height: 100%; display: block; z-index: 2;
          /* レンズアイ本体。バレルの落ち影だけ薄く（gooフィルタは旧磁性流体用＝不使用） */
@@ -123,46 +159,77 @@
            pointer-events: none; }
 
   /* ===== 文字（下部・小さく） ===== */
+  /* ヴァイブランシー（apple-design skill §12/§15）: 変化する背景の上では、
+     薄いグレー＋大きな黒ハローではなく「白寄りの高コントラスト・やや太字・小さめの字間広げ」で読ませる。
+     影は〈密着した硬い影〉＋〈広く薄い影〉の二段——1本の大きなボケ影より輪郭が濁らない。 */
   #label {
     position: absolute; left: 8px; right: 8px; bottom: 7px; z-index: 5;
-    text-align: center; font-size: 10px; letter-spacing: .02em;
-    color: var(--text);
+    text-align: center; font-size: 10px; letter-spacing: .04em; font-weight: 500;
+    color: #f4f7ff;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    text-shadow: 0 1px 5px rgba(0,0,0,.9), 0 0 2px rgba(0,0,0,.7);
+    text-shadow: 0 0 2px rgba(0,0,0,.72), 0 1px 1px rgba(0,0,0,.70),
+                 0 0 7px rgba(0,0,0,.55), 0 0 15px rgba(0,0,0,.32);
     pointer-events: none;
   }
 
-  /* ===== 下書きバッジ（左上・クリックで全消し） ===== */
+  /* ===== 下書きバッジ（左上・クリックで全消し） =====
+     skill:「Put color on a solid layer, not the translucent foreground」——
+     色を持つ要素は半透明のマテリアルに溶かさず、不透明な面に乗せる。 */
   #badge {
-    position: absolute; top: 6px; left: 6px; display: none; z-index: 5;
+    position: absolute; top: 6px; left: 6px; display: none; z-index: 6;
     font-size: 8.5px; padding: 2px 7px; border-radius: 9px;
-    color: var(--text);
-    background: color-mix(in srgb, var(--accent) 26%, rgba(10,12,24,.5));
-    border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
-    cursor: pointer; transition: all .15s ease;
-    backdrop-filter: blur(6px);
+    color: #fff; font-weight: 500; letter-spacing: .02em;
+    background: color-mix(in srgb, var(--accent) 92%, #05070f);
+    cursor: pointer;
+    transition: background 150ms ease, color 150ms ease, transform 130ms var(--ease-out);
   }
-  #badge:hover { background: rgba(247,118,142,.3); border-color: rgba(247,118,142,.65);
-                 color: #ffd9e0; }
+  #badge:active { transform: scale(.97); }   /* 押したら必ず何か返す（emil） */
 
   /* ===== ボタン（右上・ホバーで出現） ===== */
   #btns {
-    position: absolute; top: 6px; right: 6px; z-index: 5;
+    position: absolute; top: 6px; right: 6px; z-index: 6;
     display: flex; gap: 4px;
-    opacity: 0; transform: translateY(-4px); transition: all .22s ease;
+    opacity: 0; transform: translateY(-4px);
+    transition: opacity 180ms var(--ease-out), transform 180ms var(--ease-out);
   }
-  #tile:hover #btns { opacity: 1; transform: none; }
   .btn {
     width: 18px; height: 18px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
     font-size: 10.5px; cursor: pointer; color: var(--text-dim);
     background: rgba(16, 20, 38, .55);
     border: 1px solid rgba(255,255,255,.14);
-    transition: all .15s ease;
-    backdrop-filter: blur(6px);
+    transition: background 150ms ease, color 150ms ease, border-color 150ms ease,
+                transform 130ms var(--ease-out);
+    -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
   }
-  .btn:hover { color: #fff; background: rgba(255,255,255,.16); transform: scale(1.1); }
-  #btn-close:hover { color: #ff8da3; border-color: rgba(255,141,163,.5); }
+  .btn:active { transform: scale(.94); }   /* 反応は押した瞬間に返す */
+  /* タッチ端末では tap が hover を誤発火させるので、ホバー演出はこのクエリで囲う（emil） */
+  @media (hover: hover) and (pointer: fine) {
+    #tile:hover #btns { opacity: 1; transform: none; }
+    .btn:hover { color: #fff; background: rgba(255,255,255,.16); transform: scale(1.1); }
+    #btn-close:hover { color: #ff8da3; border-color: rgba(255,141,163,.5); }
+    #badge:hover { background: #c1436a; color: #fff; }
+    .item:hover { background: rgba(255,255,255,.06); }
+  }
+
+  /* ===== OS のアクセシビリティ設定を尊重（apple-design skill §14） ===== */
+  @media (prefers-reduced-transparency: reduce) {
+    /* 透過を弱める設定なら、マテリアルを曇らせ不透明側に倒す（skill の指定どおり） */
+    body.acrylic #tilebd { display: none; }          /* 歪んだ素通しをやめて不透明にする */
+    body.acrylic #tile::before { background: rgba(9, 12, 24, .88); }
+    body.acrylic #panel  { background: rgba(9, 12, 24, .94);
+                           -webkit-backdrop-filter: none; backdrop-filter: none; }
+  }
+  @media (prefers-contrast: more) {
+    :root { --glass-tint: rgba(6, 8, 16, .78); --edge-top: rgba(255,255,255,.6); }
+    #label { color: #fff; font-weight: 600;
+             text-shadow: 0 1px 2px #000, 0 0 6px rgba(0,0,0,.95); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    /* 動きは消すが不透明度の変化は残す（skill: gentler equivalent であって zero ではない） */
+    #panel { transition: opacity 200ms ease; transform: none !important; filter: none !important; }
+    .item, .btn, #btns, #badge { transition: opacity 150ms ease; transform: none !important; }
+  }
 </style>
 </head>
 <body class="solid">
@@ -171,43 +238,32 @@
     <div id="hist"></div>
   </div>
 
+  <!-- 背後の実画素（python の背後サンプラが窓の矩形をそのまま送る）。窓全体に 1:1 で敷く。
+       パネルはこれを backdrop-filter でぼかし、タイルは #tilebd 側で屈折させる。 -->
+  <div id="backdrop"><img id="bdimg" alt=""></div>
+
   <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
-    <!-- 厚ガラスの屈折。R/Bは屈折率を変えた分散ゴースト用（縁だけmaskで見せる） -->
-    <filter id="lens" x="-5%" y="-5%" width="110%" height="110%" color-interpolation-filters="sRGB">
-      <feImage id="lensmap" x="-5%" y="-5%" width="110%" height="110%"
-               preserveAspectRatio="none" result="map"/>
-      <feDisplacementMap in="SourceGraphic" in2="map" scale="140"
+    <!-- 厚ガラスの屈折。変位マップは JS が squircle（角丸矩形）の距離場として焼く:
+         中心は無変位、縁に近づくほど外向き法線方向へ急増し、内向きにサンプリングする
+         （＝縁が内側の景色を折り込む。箱の外を参照しないので破綻しない）。 -->
+    <!-- 領域は必ず余白付き（0%/100% にすると feImage のサブ領域が解決されず変位マップが
+         空になり、タイルが真っ暗になる。実測で確認）。外向きに最大14pxほど参照するので
+         タイル(116px)の 12% 以上の余白を取る。scale と href は JS が焼いて入れる。 -->
+    <filter id="lens" x="-15%" y="-15%" width="130%" height="130%"
+            color-interpolation-filters="sRGB">
+      <!-- サブ領域は指定しない＝フィルタ領域そのもの（％指定は SVG のビューポート基準で
+           解決され 0 になり得るため、ここで座標を書かないのが唯一確実）。
+           JS はこの拡張領域と同じ縦横比・同じ原点でマップを焼く。 -->
+      <feImage id="lensmap" preserveAspectRatio="none" result="map"/>
+      <feDisplacementMap in="SourceGraphic" in2="map" scale="0"
                          xChannelSelector="R" yChannelSelector="G"/>
-    </filter>
-    <filter id="lensR" x="-5%" y="-5%" width="110%" height="110%" color-interpolation-filters="sRGB">
-      <feImage id="lensmapR" x="-5%" y="-5%" width="110%" height="110%"
-               preserveAspectRatio="none" result="map"/>
-      <feColorMatrix in="SourceGraphic" type="matrix"
-        values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" result="ch"/>
-      <feDisplacementMap in="ch" in2="map" scale="160"
-                         xChannelSelector="R" yChannelSelector="G"/>
-    </filter>
-    <filter id="lensB" x="-5%" y="-5%" width="110%" height="110%" color-interpolation-filters="sRGB">
-      <feImage id="lensmapB" x="-5%" y="-5%" width="110%" height="110%"
-               preserveAspectRatio="none" result="map"/>
-      <feColorMatrix in="SourceGraphic" type="matrix"
-        values="0 0 0 0 0  0 0 0 0 0  0 0 1 0 0  0 0 0 1 0" result="ch"/>
-      <feDisplacementMap in="ch" in2="map" scale="122"
-                         xChannelSelector="R" yChannelSelector="G"/>
-    </filter>
-    <filter id="goo" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
-      <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="b"/>
-      <feColorMatrix in="b" type="matrix"
-        values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 22 -11"/>
     </filter>
   </defs></svg>
 
   <div id="tile" class="pywebview-drag-region">
-    <div id="backdrop"><img id="bdimg" alt=""><img id="bdR" class="ghost" alt=""><img id="bdB" class="ghost" alt=""></div>
-    <div id="glassfilm"></div>
+    <div id="tilebd"><img id="bdtile" alt=""></div>
     <canvas id="orb"></canvas>
     <canvas id="gloss"></canvas>
-    <div id="noise"></div>
     <div id="label" class="pywebview-drag-region">待機中</div>
     <div id="badge" title="クリックで下書きを全部消す"></div>
     <div id="btns">
@@ -540,49 +596,92 @@ let last = performance.now();
   requestAnimationFrame(loop);
 })(last);
 
-/* ================= 自前グラスの屈折（iOS Liquid Glass 級の縁のひずみ） =================
-   python が 0.6s 毎に送る「背後の実画像」に feDisplacementMap を掛ける。
-   変位マップ = squircle（角丸矩形）の距離場: 中心45%は無変位、縁に向かって
-   外向き法線方向へ急増し、内向きにサンプリング（縁が内側の景色を折り込む
-   ＝厚い凸レンズ。内向きなので画像外参照が起きず破綻しない）。
-   同じマップを R/B ゴースト（scale違い）にも配って縁のプリズム色分散を出す。 */
+/* ================= ガラスの屈折（スネルの法則で導出）=================
+   まひろ指摘（2026-08-06）「自分たちの適当な値でやるな。ちゃんとガラスらしい歪みに」を受け、
+   経験則のカーブをやめて **実際の光学** から変位を計算する。
+   出典: kube.io "Liquid Glass in the Browser: Refraction with CSS and SVG"
+   （https://kube.io/blog/liquid-glass-css-svg/）の導出をそのまま実装:
+     1. ガラスの断面プロファイル（縁のベベル）を squircle 凸面 y = ⁴√(1-(1-x)⁴) で置く
+        ——記事が「円弧より遷移が滑らかで屈折の勾配が素直」として採っている面
+     2. その微分から法線の傾き θ₁ を出す
+     3. スネルの法則 n₁sinθ₁ = n₂sinθ₂（n₁=1 空気, n₂=1.5 ガラス）で屈折角 θ₂
+     4. 厚み THICK を通る間の横ずれ = THICK × tan(θ₁-θ₂) を、角丸矩形SDFの
+        **外向き法線**方向へ適用（＝縁の外側の景色が縁に寄って見える。実物のガラスの縁の見え方）
+     5. 記事の符号化どおり r = 128 + x·127 / g = 128 + y·127 に正規化して焼き、
+        feDisplacementMap の scale に最大変位[px]を渡す
+   中心（ベベルの内側）は法線が真上＝変位ゼロ＝**背景が完全に素通し**のまま。
+   ベベル幅・厚み・屈折率が唯一のノブで、どれも物理的に意味のある量になっている。 */
 (function initLens() {
-  const m = 128, c = document.createElement("canvas");
-  c.width = c.height = m;
-  const g = c.getContext("2d");
-  const im = g.createImageData(m, m);
-  const P = 5;   /* squircle 次数（角丸矩形の等高線） */
-  for (let y = 0; y < m; y++) {
-    for (let x = 0; x < m; x++) {
-      const nx = (x / (m - 1)) * 2 - 1, ny = (y / (m - 1)) * 2 - 1;
-      const d = Math.pow(Math.pow(Math.abs(nx), P) + Math.pow(Math.abs(ny), P), 1 / P);
-      /* 縁に行くほど強く: 素通しは中心12%だけ、広域に2.2乗で立ち上がる
-         （2026-07-16 まひろFB「歪弱すぎてガラス感ない」→ 広く・強く） */
-      const t = Math.max(0, (d - 0.12) / 0.88);
-      let f = Math.pow(Math.min(1, t), 2.2);
-      /* 有機的なゆらぎ（吹きガラスの不均一）＝角度方向に緩く変調 → リキッド感 */
-      const th = Math.atan2(ny, nx);
-      f *= 1 + 0.15 * Math.sin(3 * th + 1.7) + 0.08 * Math.sin(5 * th + 0.6);
-      f = Math.min(1, Math.max(0, f));
-      let gx = Math.sign(nx) * Math.pow(Math.abs(nx), P - 1);
-      let gy = Math.sign(ny) * Math.pow(Math.abs(ny), P - 1);
+  const IOR = 1.5;      /* ガラスの屈折率（記事の既定 n₂=1.5） */
+  const BEZEL = 13;     /* 縁のベベル幅[px]。ここだけが曲がる帯 */
+  const THICK = 14;     /* ガラスの厚み[px]。横ずれ量に比例 */
+  const RAD = 16;       /* 角丸半径[px]（CSS の --radius と一致させる） */
+  const FADE = 2.5;     /* 最外周のこの幅[px]は変位を0へ戻す——タイルの外の画素は
+                           サンプラが持っていないので、そこを参照すると透けて黒くなる */
+
+  const tile = document.getElementById("tile");
+  const r0 = tile.getBoundingClientRect();
+  const W = Math.max(32, Math.round(r0.width || 116));
+  const H = Math.max(32, Math.round(r0.height || 116));
+  /* フィルタ領域は -15%/130%。マップも同じ広さで焼き、中央に実タイルを置く
+     （feImage はサブ領域を指定していないのでフィルタ領域いっぱいに引き伸ばされる）。 */
+  const PAD = 0.15;
+  const MW = Math.round(W * (1 + PAD * 2)), MH = Math.round(H * (1 + PAD * 2));
+  const OX = (MW - W) / 2, OY = (MH - H) / 2;
+
+  /* 角丸矩形の符号付き距離（タイル中心原点・内側が負） */
+  const sdf = (px, py) => {
+    const qx = Math.abs(px) - W / 2 + RAD, qy = Math.abs(py) - H / 2 + RAD;
+    return Math.hypot(Math.max(qx, 0), Math.max(qy, 0))
+           + Math.min(Math.max(qx, qy), 0) - RAD;
+  };
+  const surf = (x) => Math.pow(1 - Math.pow(1 - x, 4), 0.25);   /* squircle 凸面 */
+
+  const dxs = new Float32Array(MW * MH), dys = new Float32Array(MW * MH);
+  let maxd = 1e-6;
+  for (let y = 0; y < MH; y++) {
+    for (let x = 0; x < MW; x++) {
+      const px = x + 0.5 - OX - W / 2, py = y + 0.5 - OY - H / 2;
+      const d = -sdf(px, py);                    /* 縁からの距離（内側が正） */
+      if (d <= 0 || d >= BEZEL) continue;        /* 外側 or 平らな中心＝無変位 */
+      const t = d / BEZEL;
+      const slope = (surf(Math.min(1, t + 0.001)) - surf(Math.max(0, t - 0.001))) / 0.002;
+      const th1 = Math.atan(slope);                                  /* 入射角 */
+      const th2 = Math.asin(Math.min(1, Math.sin(th1) / IOR));       /* 屈折角 */
+      let shift = THICK * Math.tan(th1 - th2);                       /* 横ずれ[px] */
+      if (d < FADE) shift *= d / FADE;                               /* 最外周は戻す */
+      const gx = (sdf(px + 0.5, py) - sdf(px - 0.5, py));            /* 外向き法線 */
+      const gy = (sdf(px, py + 0.5) - sdf(px, py - 0.5));
       const gl = Math.hypot(gx, gy) || 1;
-      gx /= gl; gy /= gl;                        /* 外向き法線 */
-      const i = (y * m + x) * 4;
-      im.data[i] = 128 - gx * f * 126;           /* 内向きに折り込む＝画像外参照なし */
-      im.data[i + 1] = 128 - gy * f * 126;
-      im.data[i + 2] = 128;
-      im.data[i + 3] = 255;
+      const i = y * MW + x;
+      dxs[i] = (gx / gl) * shift;
+      dys[i] = (gy / gl) * shift;
+      if (Math.abs(shift) > maxd) maxd = Math.abs(shift);
     }
   }
-  g.putImageData(im, 0, 0);
-  const uri = c.toDataURL();
-  for (const id of ["lensmap", "lensmapR", "lensmapB"]) {
-    document.getElementById(id).setAttribute("href", uri);
+  const c = document.createElement("canvas");
+  c.width = MW; c.height = MH;
+  const g = c.getContext("2d");
+  const im = g.createImageData(MW, MH);
+  for (let i = 0; i < MW * MH; i++) {
+    const o = i * 4;
+    im.data[o] = 128 + (dxs[i] / maxd) * 127;
+    im.data[o + 1] = 128 + (dys[i] / maxd) * 127;
+    im.data[o + 2] = 128;
+    im.data[o + 3] = 255;
   }
+  g.putImageData(im, 0, 0);
+  document.getElementById("lensmap").setAttribute("href", c.toDataURL());
+  /* 正規化を戻す: 変位[px] = scale × (ch/255 - 0.5) なので scale = 最大変位 × 255/127 */
+  document.querySelector("#lens feDisplacementMap")
+          .setAttribute("scale", (maxd * 255 / 127).toFixed(2));
 })();
+
+/* 背後の実画素（python の背後サンプラが窓の矩形をそのまま JPEG で送ってくる）。
+   #bdimg = 窓全体（パネルがぼかして使う） / #bdtile = タイルが屈折させて使う同じ絵 */
 window.setBackdrop = (src) => {
-  for (const id of ["bdimg", "bdR", "bdB"]) document.getElementById(id).src = src;
+  document.getElementById("bdimg").src = src;
+  document.getElementById("bdtile").src = src;
 };
 
 /* ================= 状態ポーリング ================= */
@@ -621,14 +720,49 @@ document.getElementById("badge").addEventListener("click", () =>
   window.pywebview.api.clear_pending());
 document.getElementById("btn-dash").addEventListener("click", () =>
   window.pywebview.api.open_dashboard());
-document.getElementById("btn-hist").addEventListener("click", async () => {
+/* 履歴パネルの開閉。skill:「Materialize, don't just fade」——ぼけとスケールを同時に動かし、
+   面が“materialize（出現）”して見えるようにする。CSS 側に transition を置き、
+   ここは表示フラグと窓リサイズとの同期だけ持つ:
+     開く: 先に窓を伸ばす要求を出す → 窓が実際に伸びた瞬間（resize）にアニメ開始
+           （窓は python 側の監視ループが最大 120ms 遅れで伸ばすので、
+            表示と同時にアニメを始めると見えないところで再生が終わってしまう）
+     閉じる: アニメ（150ms・enter より速い）を先に流し、終わってから窓を縮める */
+(function initPanel() {
   const panel = document.getElementById("panel");
-  const open = panel.style.display !== "flex";
-  panel.style.display = open ? "flex" : "none";
-  document.body.classList.toggle("expanded", open);
-  await window.pywebview.api.set_expanded(open);
-  if (open) renderHistory();
-});
+  const body = document.body;
+  let open = false, timer = 0;
+
+  const onResize = () => {
+    /* 窓が伸びた＝パネルの居場所ができた。ここで materialize を開始する */
+    if (open && panel.style.display === "flex" && window.innerHeight > 200) {
+      window.removeEventListener("resize", onResize);
+      requestAnimationFrame(() => body.classList.add("expanded"));
+    }
+  };
+
+  document.getElementById("btn-hist").addEventListener("click", async () => {
+    clearTimeout(timer);
+    open = !open;
+    if (open) {
+      panel.style.display = "flex";
+      renderHistory();
+      window.addEventListener("resize", onResize);
+      timer = setTimeout(onResizeFallback, 450);   /* resize が来ない場合の保険 */
+      await window.pywebview.api.set_expanded(true);
+    } else {
+      window.removeEventListener("resize", onResize);
+      body.classList.remove("expanded");
+      timer = setTimeout(async () => {             /* 消えてから窓を縮める */
+        panel.style.display = "none";
+        await window.pywebview.api.set_expanded(false);
+      }, 160);
+    }
+  });
+
+  function onResizeFallback() {
+    if (open) { window.removeEventListener("resize", onResize); body.classList.add("expanded"); }
+  }
+})();
 
 async function renderHistory() {
   const items = await window.pywebview.api.history();
