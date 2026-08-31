@@ -18,6 +18,12 @@ logs/
 *.log
 *.bmp
 
+# --- 秘匿・個人データ（公開リポジトリ対策） ---
+# config.toml : ダッシュボードが DeepSeek APIキー等を書き込む実設定。テンプレは config.example.toml
+# *.wav       : 実声サンプル等の録音（声は個人データ。コミットしない）
+config.toml
+*.wav
+
 # --- OS/エディタ ---
 Thumbs.db
 desktop.ini

@@ -1,13 +1,24 @@
+# lucas-voice 設定テンプレート
+# 使い方: このファイルを config.toml にコピーし、<lucas-voice> と書かれた箇所を
+#         自分の環境の絶対パス（このリポジトリを置いた場所）に置き換える。
+# config.toml は APIキー等を含むため git 管理外（.gitignore 済み）。コミットされない。
+
+[audio]
+# 使うマイクを名前で固定する（部分一致・大小無視）。空文字ならOS既定。
+# 未指定だとプロセス起動時点のOS既定に固定され、以後マイクを挿しても既定を変えても届かない。
+# MMEはデバイス名を31文字で切るので、切れない範囲の語（例 USB Microphone）で指定する。
+input_device = ""
+
 [stt]
-# 実測(2026-07-12, 171秒音声): large-v3-turbo=RTF0.44・一致率95% / kotoba=RTF0.65・81%
+# 実測(171秒音声): large-v3-turbo=RTF0.44・一致率95% / kotoba=RTF0.65・81%
 # → turbo が速さも精度も勝ち。kotoba は "kotoba" 指定で戻せる
 engine = "openvino"         # "openvino"(NPU/GPU・CPU解放) / "faster-whisper"(CPU・実績)
 device = "NPU"         # openvino時のデバイス: NPU / GPU / CPU / AUTO
-ov_model_dir = "C:\\Users\\mahim\\lucas-voice\\models\\whisper-large-v3-turbo-int8-ov"
+ov_model_dir = "<lucas-voice>\\models\\whisper-large-v3-turbo-int8-ov"
 unload_idle_min = 15  # アイドルこの分数でSTT解放（約950MB返却・復帰2〜4秒）。0=常駐
 model = "large-v3-turbo"
 beam_size = 2          # turbo は beam2 で精度低下なし（実測 95.2%）。kotoba に戻すなら 5 推奨
-cpu_threads = 8     # 推論スレッド数（このPCは8コア。0=ライブラリ既定の4）
+cpu_threads = 8     # 推論スレッド数（論理CPU数に合わせる。0=ライブラリ既定の4）
 
 [vad]
 threshold_floor = 0.005   # 発話検出のRMS下限（実測: 発話0.01〜0.03 / ノイズ0.0015）
@@ -21,7 +32,7 @@ min_speech_ratio = 0.1  # 人声比率がこれ未満なら破棄（実測: 人�
 [wake]
 engine = "vosk"        # "vosk" = 軽量常時ウェイク（即発火・待機中whisper停止） / "whisper" = 旧方式
 words = ["ルーカス"]            # vosk用の厳格ウェイク語（トークン完全一致）。緩い変種は誤発火する
-model_dir = "C:\\Users\\mahim\\lucas-voice\\models\\vosk-model-small-ja-0.22"
+model_dir = "<lucas-voice>\\models\\vosk-model-small-ja-0.22"
 
 [words]
 wake = ["ルーカス", "るーかす", "ルーカ", "ルカス"]
@@ -33,14 +44,14 @@ cancel = ["キャンセル", "下書き消して", "取り消し", "クリア"]
 [cc]
 window_title = "Lucas-CC"
 boot_wait_sec = 25       # CC起動からテキスト送信可能までの待ち
-workdir = "C:\\Users\\mahim\\lucas-voice"        # CCセッションのワークスペース
+workdir = "<lucas-voice>"        # CCセッションのワークスペース
 
 [ui]
 enabled = true          # 最前面ステータスバー（false でバーなし運用）
 engine = "glass"          # "glass" = リキッド/グラスUI（WebView2） / "classic" = 旧tkバー
 fluid_color = "#0b0d14"      # 旧磁性流体の色（バックアップ用に残置）
-# レンズアイで色を持つのは中心のコア球だけ（旧 eye_skin は 2026-07-19 廃止・ここへ一本化）
-pupil_color = "#eb0000"      # 16進色 or "rainbow"。青#4fa8f5 / 赤#ff4d4d(HAL) / 金#ffc24d / 紫#b78aff / 翠#4de0b8
+# レンズアイで色を持つのは中心のコア球だけ
+pupil_color = "#4fa8f5"      # 16進色 or "rainbow"。青#4fa8f5 / 赤#ff4d4d(HAL) / 金#ffc24d / 紫#b78aff / 翠#4de0b8
 
 [tts]
 engine = "voicevox"         # "voicevox" = リッチ男声（ローカル） / "sapi" = 旧Haruka（確実）
@@ -48,10 +59,22 @@ fx = "jarvis"                 # "jarvis" = 深み+AI感の加工 / "none" = 素�
 style = 13             # VOICEVOXスタイルID（voice_samples\ で聴き比べて選ぶ）
 speed = 1.0             # 話速（1.0=標準）
 url = "http://127.0.0.1:50021"
-engine_dir = "C:\\Users\\mahim\\lucas-voice\\voicevox_engine"        # run.exe の場所（自動起動用）
+engine_dir = "<lucas-voice>\\voicevox_engine"        # run.exe の場所（自動起動用）
 
 [dictation]
 enabled = true        # push-to-talk 文字起こし（カーソル位置に貼り付け＋クリップボード保持）
 hold_keys = "ctrl+alt"       # このキーを押している間だけ録音、離すと確定
-max_recording_sec = 180  # 録音上限（残り20秒からカウントダウン→到達で自動確定）
+max_recording_sec = 0  # 0=無制限（押している限り録り続ける）。正の値=そこで一旦貼って継続
 chunk_sec = 20        # 録音しながら裏で認識するチャンク長（無音の切れ目で分割）
+
+[refine]
+# 文字起こしの清書（DeepSeek V4 Flash）: 意味・情報は同じまま誤字・句読点・改行だけ整える。
+# 失敗時（残高切れ402・キー未設定・接続断）は必ず原文のまま貼る/送る＝配送は止まらない。
+enabled = true
+dictation = true      # PTT文字起こし（貼り付け前）に適用
+dialogue = true       # CCへの送信（「これでOK」）前に適用
+api_key = ""          # DeepSeekのAPIキー（ダッシュボードの設定から登録。空なら素通し）
+model = "deepseek-v4-flash"
+timeout_sec = 30      # これを超えたら整形を諦めて原文を使う
+# 整形の方法（システムプロンプト）はダッシュボードから編集できる。空なら既定文を使う
+system_prompt = ""
