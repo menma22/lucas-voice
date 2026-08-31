@@ -23,6 +23,7 @@ logs/
 # *.wav       : 実声サンプル等の録音（声は個人データ。コミットしない）
 config.toml
 *.wav
+CLAUDE.local.md
 
 # --- OS/エディタ ---
 Thumbs.db
